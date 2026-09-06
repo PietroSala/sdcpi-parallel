@@ -222,7 +222,7 @@ class Campaign:
         if not prev.exists():
             return False
         status = json.loads(prev.read_text()).get("status")
-        return status in ("timeout", "killed")
+        return status in UNDONE
 
     def write(self, key: str, conf: str, record: dict) -> None:
         path = self.record_path(key, conf, self.round)
@@ -360,7 +360,7 @@ def main() -> int:
     rounds = 0
     while a.rounds is None or rounds < a.rounds:
         campaign = Campaign(a.experiment.resolve(), rnd, a.timeout, host)
-        campaign.say(f"round {rnd}, timeout {campaign.timeout:.0f} s, "
+        campaign.say(f"round {rnd}, timeout {campaign.timeout:g} s, "
                      f"{host['host']} {host['cpus']} cpus, "
                      f"sdcpi {host['sdcpi_commit'][:12]}, {host['storm']}")
         seen = 0
