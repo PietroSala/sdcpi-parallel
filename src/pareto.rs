@@ -5,15 +5,18 @@
 //! infeasibility is closed downward. The box is discretised into ticks, one
 //! tick per component counting tightness from `u_i` down, and two OBDDs over
 //! the bits of the ticks hold the grid points whose status is unknown and the
-//! ones known feasible. The loop draws an unknown point at random, by a walk
-//! on the diagram, and puts it to `determine`; the loosest unknown point, the
-//! lexicographically smallest tick vector, is the alternative. An
-//! accept comes with the accepting sum of the winning frontier, which every
-//! completion of the partial strategy pays at most: the cone above it is
-//! feasible, the sum is recorded as an apex with the strategy as its witness.
-//! A refusal is at a maximal infeasible grid point, every point above it being
-//! known already, so the cone below it is retired. The minimal apexes at the
-//! end are the frontier, each born with its strategy.
+//! ones known feasible. The loop takes the tightest unknown point, the
+//! lexicographically largest tick vector, and puts it to `determine`; the
+//! loosest point and a point drawn at random by a walk on the diagram are the
+//! alternatives. Every point below the tightest one is known, and known
+//! infeasible, so an accept there has the point itself as its apex, a point of
+//! the frontier, recorded with the strategy as its witness; in the other modes
+//! the apex is the accepting sum of the winning frontier, which every
+//! completion of the partial strategy pays at most. A refusal retires the cone
+//! below the point and, with the certificate the search returns, every unknown
+//! budget outside the cones above the minimal rejecting sums of the exhausted
+//! tree. The minimal apexes at the end are the frontier, each born with its
+//! strategy.
 //!
 //! Without a precision the tick is `1/D`, `D` a common denominator of every
 //! achievable expected value: every run probability is a product of the

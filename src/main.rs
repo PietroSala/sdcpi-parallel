@@ -135,13 +135,14 @@ options for pareto
   The box [L, U] is discretised into ticks and explored with two OBDDs, an
   unknown point going to determine at every step; the search runs on exact
   rationals. Every option of determine but --B is forwarded.
-  --extract MODE        random | draw | loosest | tightest (default random)
-                        random draws an unknown point by a walk on the
-                        diagram, seeded by --seed, and loosens it to a
-                        maximal unknown point; draw keeps the drawn point
-                        as it is; loosest takes the lexicographically
-                        smallest tick vector, tightest the largest, where
-                        an accept is a point of the frontier itself
+  --extract MODE        tightest | loosest | random | draw (default tightest)
+                        tightest takes the lexicographically largest tick
+                        vector, a minimal unknown point, where an accept is
+                        a point of the frontier itself; loosest the
+                        smallest; random draws an unknown point by a walk
+                        on the diagram, seeded by --seed, and loosens it to
+                        a maximal unknown point; draw keeps the drawn point
+                        as it is
   --certificate B       true, the default, reads the certificate of every
                         refusal, the minimal rejecting sums of the leaves
                         of the exhausted tree, and retires every budget
@@ -830,7 +831,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
         }
     };
     let extract = match args.flag("extract").map(pareto::Extract::parse) {
-        None => pareto::Extract::Random,
+        None => pareto::Extract::Tightest,
         Some(Some(e)) => e,
         Some(None) => return fail("--extract wants random, draw, loosest or tightest"),
     };

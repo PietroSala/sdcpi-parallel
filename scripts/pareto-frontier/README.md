@@ -34,8 +34,9 @@ times, in this order:
 | `oxidd` | `sdcpi pareto --workers 1 --obdd-library oxidd`, both tests |
 
 The model and the property of Storm come from `sdcpi to_prism` and
-`sdcpi to_objective --pareto true`. Every run of ours is at the exact tick,
-so its points are the frontier itself; Storm runs at its default
+`sdcpi to_objective --pareto true`. Every run of ours is at the exact tick
+with the tightest extraction and the certificate of every refusal, the
+defaults of the command, so its points are the frontier itself; Storm runs at its default
 precision, and where its set of points differs from ours the precision is
 to be tightened until the set is stable, a step of the analysis and not
 of the campaign.
