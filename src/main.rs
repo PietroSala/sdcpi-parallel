@@ -12,6 +12,7 @@ mod parse;
 mod bound;
 mod exact;
 mod num;
+mod pareto;
 mod search;
 mod state;
 mod tables;
@@ -21,6 +22,7 @@ mod tree;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use num::{Exact, Num};
 use search::{Ablation, Answer, Config, Selection, Steal};
 use tables::Store;
 use tree::Tree;
@@ -35,6 +37,7 @@ fn main() {
         "info" => cmd_info(&args[1..]),
         "optima" => cmd_optima(&args[1..]),
         "determine" => cmd_determine(&args[1..]),
+        "pareto" => cmd_pareto(&args[1..]),
         "parse" => cmd_parse(&args[1..]),
         "to_prism" => cmd_to_prism(&args[1..]),
         "to_objective" => cmd_to_objective(&args[1..]),
@@ -56,6 +59,7 @@ const USAGE: &str = "\
 sdcpi  on-the-fly strategy synthesis for BPMN+CPI processes
 
   sdcpi determine <instance> (--B a,b,... | --B-file F) [options]
+  sdcpi pareto    <instance> [--precision E] [--obdd-library L] [options]
   sdcpi parse     (<process> | --file F) [--out F]
   sdcpi to_prism  <instance> [--encode-history true|false] [--out F]
   sdcpi to_objective <instance> (--B a,b,... | --B-file F) [--out F]
@@ -118,6 +122,24 @@ options for determine
   --print-strategy 1    print the strategy at the end. Without it the decisions
                         are never recorded, which the search is faster for, and
                         only the outcome is reported
+  --arith MODE          f64 | exact                       (default f64)
+                        exact runs the search on rationals of arbitrary
+                        precision, every comparison with B exact and the
+                        accepting sum of the winning frontier printed as a
+                        rational; --epsilon is ignored there
+
+options for pareto
+  the frontier of the achievable expected impacts, one strategy per point.
+  The box [L, U] is discretised into ticks and explored with two OBDDs, the
+  loosest unknown point going to determine at every step; the search runs on
+  exact rationals. Every option of determine but --B is forwarded.
+  --precision E         the tick of the grid; without it the tick is 1/D
+                        with D a common denominator of every achievable
+                        expected value, and the frontier is exact
+  --obdd-library L      biodivine | oxidd                 (default biodivine)
+  --components i,j,...  the frontier over these components only, the others
+                        left at their upper bound       (default all)
+  --print-strategy 1    print the strategy behind every point
 
 options for optima
   --max-states N        give up past this many choice states (default 2000000)
@@ -326,6 +348,11 @@ fn fail(message: &str) -> i32 {
 
 fn fmt_vec(v: &[f64]) -> String {
     let parts: Vec<String> = v.iter().map(|x| format!("{x:.6}")).collect();
+    format!("[{}]", parts.join(", "))
+}
+
+fn fmt_exact<N: Num>(v: &[N]) -> String {
+    let parts: Vec<String> = v.iter().map(|x| x.describe()).collect();
     format!("[{}]", parts.join(", "))
 }
 
@@ -541,6 +568,74 @@ fn cmd_to_prism(args: &[String]) -> i32 {
     }
 }
 
+/// The options of the search as the flags give them, shared by determine and
+/// by pareto, which runs one search per query.
+struct SearchOptions {
+    steal: Steal,
+    epsilon: f64,
+    workers: usize,
+    ablation: Ablation,
+    selection: Selection,
+    seed: u64,
+    timeout: Option<Duration>,
+}
+
+impl SearchOptions {
+    fn from_args(args: &Args) -> Result<SearchOptions, String> {
+        Ok(SearchOptions {
+            steal: match args.flag("steal").map(Steal::parse) {
+                None => Steal::Ring,
+                Some(Some(v)) => v,
+                Some(None) => return Err("--steal wants ring or any".to_string()),
+            },
+            epsilon: args
+                .flag("epsilon")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0),
+            workers: args
+                .flag("workers")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1),
+            ablation: match args.flag("ablation").map(Ablation::parse) {
+                None => Ablation::Both,
+                Some(Some(a)) => a,
+                Some(None) => {
+                    return Err("--ablation wants both, accept, reject or none".to_string())
+                }
+            },
+            selection: match args.flag("selection").map(Selection::parse) {
+                None => Selection::Weighted,
+                Some(Some(s)) => s,
+                Some(None) => {
+                    return Err("--selection wants weighted, uniform or oldest".to_string())
+                }
+            },
+            seed: args
+                .flag("seed")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(20260816),
+            timeout: args
+                .flag("timeout")
+                .and_then(|v| v.parse::<f64>().ok())
+                .map(Duration::from_secs_f64),
+        })
+    }
+
+    fn config<N: Num>(&self, threshold: Vec<N>, record_strategy: bool) -> Config<N> {
+        Config {
+            threshold,
+            record_strategy,
+            steal: self.steal,
+            epsilon: self.epsilon,
+            workers: self.workers,
+            ablation: self.ablation,
+            selection: self.selection,
+            seed: self.seed,
+            timeout: self.timeout,
+        }
+    }
+}
+
 fn cmd_determine(args: &[String]) -> i32 {
     let args = match parse_args(args) {
         Ok(a) => a,
@@ -555,56 +650,55 @@ fn cmd_determine(args: &[String]) -> i32 {
         Ok(s) => s,
         Err(e) => return fail(&e),
     };
-    let threshold: Vec<f64> = match resolve_b(spec, &tree.meta.impact_names, tree.k) {
-        Ok(v) => v.into_iter().map(|b| b.value).collect(),
+    let budget: Vec<BVal> = match resolve_b(spec, &tree.meta.impact_names, tree.k) {
+        Ok(v) => v,
         Err(e) => return fail(&e),
     };
-
+    let opts = match SearchOptions::from_args(&args) {
+        Ok(o) => o,
+        Err(e) => return fail(&e),
+    };
     let print_strategy = args.flag("print-strategy").is_some();
     let print_size = args.flag("print-size").is_some();
-    let cfg = Config::<f64> {
-        threshold: threshold.clone(),
-        // recording costs nothing measurable, 1.7367 s against 1.7363 s on
-        // an instance that searches for over a second, and without it the size
-        // of the partial strategy cannot be told
-        record_strategy: print_strategy || print_size,
-        steal: match args.flag("steal").map(Steal::parse) {
-            None => Steal::Ring,
-            Some(Some(v)) => v,
-            Some(None) => return fail("--steal wants ring or any"),
-        },
-        epsilon: args
-            .flag("epsilon")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.0),
-        workers: args
-            .flag("workers")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1),
-        ablation: match args.flag("ablation").map(Ablation::parse) {
-            None => Ablation::Both,
-            Some(Some(a)) => a,
-            Some(None) => return fail("--ablation wants both, accept, reject or none"),
-        },
-        selection: match args.flag("selection").map(Selection::parse) {
-            None => Selection::Weighted,
-            Some(Some(s)) => s,
-            Some(None) => return fail("--selection wants weighted, uniform or oldest"),
-        },
-        seed: args
-            .flag("seed")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(20260816),
-        timeout: args
-            .flag("timeout")
-            .and_then(|v| v.parse::<f64>().ok())
-            .map(Duration::from_secs_f64),
-    };
+    match args.flag("arith") {
+        None | Some("f64") => {
+            let threshold: Vec<f64> = budget.iter().map(|b| b.value).collect();
+            run_determine(&tree, threshold, &opts, print_size, print_strategy, false)
+        }
+        Some("exact") => {
+            let mut threshold: Vec<Exact> = Vec::with_capacity(budget.len());
+            for b in &budget {
+                match Exact::from_decimal(&b.text) {
+                    Some(v) => threshold.push(v),
+                    None => return fail(&format!("`{}` in B is not a decimal", b.text)),
+                }
+            }
+            run_determine(&tree, threshold, &opts, print_size, print_strategy, true)
+        }
+        Some(v) => fail(&format!("--arith wants f64 or exact, found {v:?}")),
+    }
+}
 
-    let (answer, stats) = search::search(&tree, cfg);
+fn run_determine<N: Num>(
+    tree: &Tree,
+    threshold: Vec<N>,
+    opts: &SearchOptions,
+    print_size: bool,
+    print_strategy: bool,
+    exact: bool,
+) -> i32 {
+    // recording costs nothing measurable, 1.7367 s against 1.7363 s on
+    // an instance that searches for over a second, and without it the size
+    // of the partial strategy cannot be told
+    let cfg = opts.config(threshold.clone(), print_strategy || print_size);
+    let (answer, stats) = search::search(tree, cfg);
 
+    let approx: Vec<f64> = threshold.iter().map(|b| b.to_f64()).collect();
     println!("instance       {}", tree.meta.key);
-    println!("B              {}", fmt_vec(&threshold));
+    println!("B              {}", fmt_vec(&approx));
+    if exact {
+        println!("B exact        {}", fmt_exact(&threshold));
+    }
     println!(
         "answer         {}",
         match &answer {
@@ -637,6 +731,9 @@ fn cmd_determine(args: &[String]) -> i32 {
         }
     );
     if let Answer::Yes(s) = &answer {
+        if exact {
+            println!("accepting      {}", fmt_exact(&s.accepting));
+        }
         if print_size || print_strategy {
             // How large the partial strategy is, which is the third thing a
             // caller may want after the outcome and the strategy itself. The
@@ -657,6 +754,142 @@ fn cmd_determine(args: &[String]) -> i32 {
     }
     match answer {
         Answer::Failed(_) => 1,
+        _ => 0,
+    }
+}
+
+/// The frontier of the achievable expected impacts, with a strategy per point.
+fn cmd_pareto(args: &[String]) -> i32 {
+    let args = match parse_args(args) {
+        Ok(a) => a,
+        Err(e) => return fail(&e),
+    };
+    let (_path, tree) = match load(&args) {
+        Ok(v) => v,
+        Err(e) => return fail(&e),
+    };
+    let opts = match SearchOptions::from_args(&args) {
+        Ok(o) => o,
+        Err(e) => return fail(&e),
+    };
+    let precision = match args.flag("precision") {
+        None => None,
+        Some(t) => match num::parse_decimal(t) {
+            Some(r) => Some(r),
+            None => return fail(&format!("--precision wants a decimal, found {t:?}")),
+        },
+    };
+    let library = match args.flag("obdd-library").map(pareto::Library::parse) {
+        None => pareto::Library::Biodivine,
+        Some(Some(l)) => l,
+        Some(None) => return fail("--obdd-library wants biodivine or oxidd"),
+    };
+    let components = match args.flag("components") {
+        None => None,
+        Some(t) => {
+            let mut out = Vec::new();
+            for part in t.trim_matches(|c| c == '[' || c == ']').split(',') {
+                match part.trim().parse::<usize>() {
+                    Ok(i) => out.push(i),
+                    Err(_) => return fail(&format!("--components wants indices, found {t:?}")),
+                }
+            }
+            Some(out)
+        }
+    };
+    let print_strategy = args.flag("print-strategy").is_some();
+    let started = Instant::now();
+    let report = match pareto::frontier(
+        &tree,
+        pareto::Options {
+            precision,
+            components,
+            library,
+            search: opts.config::<Exact>(Vec::new(), true),
+        },
+    ) {
+        Ok(r) => r,
+        Err(e) => return fail(&e),
+    };
+    let elapsed = started.elapsed();
+
+    let rat = |v: &[num_rational::BigRational]| -> String {
+        let parts: Vec<String> = v.iter().map(|r| r.to_string()).collect();
+        format!("[{}]", parts.join(", "))
+    };
+    let dec = |v: &[num_rational::BigRational]| -> String {
+        let parts: Vec<String> = v.iter().map(|r| format!("{:.6}", pareto::approx(r))).collect();
+        format!("[{}]", parts.join(", "))
+    };
+    println!("instance       {}", tree.meta.key);
+    println!("library        {}", report.library);
+    match &report.denominator {
+        Some(d) => {
+            println!("tick           1/D exact");
+            println!("D              {d}");
+        }
+        None => println!("tick           {} ({:.6e})", report.epsilon, pareto::approx(&report.epsilon)),
+    }
+    let comps: Vec<String> = report.components.iter().map(|c| c.to_string()).collect();
+    println!("components     [{}]", comps.join(", "));
+    println!("U at s0        {}", dec(&report.upper));
+    println!("L at s0        {}", dec(&report.lower));
+    let ticks: Vec<String> = report.ticks.iter().map(|t| t.to_string()).collect();
+    println!("ticks          [{}]", ticks.join(", "));
+    let bits: Vec<String> = report.bits.iter().map(|b| b.to_string()).collect();
+    println!(
+        "bits           [{}] total {}",
+        bits.join(", "),
+        report.bits.iter().sum::<usize>()
+    );
+    println!(
+        "status         {}",
+        match &report.status {
+            pareto::Status::Complete => "complete".to_string(),
+            pareto::Status::Timeout => "timeout, frontier partial".to_string(),
+            pareto::Status::Failed(e) => format!("failed, {e}"),
+        }
+    );
+    println!("queries        {}", report.queries);
+    println!("accepts        {}", report.accepts);
+    println!("fails          {}", report.fails);
+    println!("witness runs   {}", report.witness_queries);
+    println!("seconds        {:.6}", elapsed.as_secs_f64());
+    println!("search seconds {:.6}", report.search_time.as_secs_f64());
+    println!("obdd seconds   {:.6}", report.obdd_time.as_secs_f64());
+    println!("obdd peak size {}", report.max_size);
+    println!("expanded       {}", report.search.expanded);
+    println!("points         {}", report.points.len());
+    for (i, p) in report.points.iter().enumerate() {
+        println!("point {:<9}{}", i + 1, dec(&p.value));
+        println!("  exact        {}", rat(&p.value));
+        println!(
+            "  origin       {}",
+            match p.origin {
+                pareto::Origin::Upper => "U".to_string(),
+                pareto::Origin::Axis(c) => format!("axis {c}"),
+                pareto::Origin::Query(n) => format!("query {n}"),
+            }
+        );
+        match &p.witness {
+            Some(w) => {
+                println!(
+                    "  witness      {} decisions, {} histories, {} open",
+                    w.decisions.len(),
+                    w.histories,
+                    w.open
+                );
+                if print_strategy {
+                    for (dh, action) in &w.decisions {
+                        println!("    after {dh:?} take {action}");
+                    }
+                }
+            }
+            None => println!("  witness      none"),
+        }
+    }
+    match report.status {
+        pareto::Status::Failed(_) => 1,
         _ => 0,
     }
 }

@@ -104,6 +104,7 @@ impl Steal {
     }
 }
 
+#[derive(Clone)]
 pub struct Config<N: Num> {
     pub threshold: Vec<N>,
     /// Whether to keep the decisions taken, so that the strategy can be
