@@ -64,7 +64,7 @@ def main() -> int:
         return 1
 
     by_diag: dict[int, dict] = defaultdict(lambda: {"inst": 0, "done": 0, "runs": 0})
-    by_conf: dict[str, dict] = {c: {"complete": 0, "timeout": 0, "killed": 0, "failed": 0,
+    by_conf: dict[str, dict] = {c: {"complete": 0, "timeout": 0, "killed": 0, "skipped": 0, "failed": 0,
                                     "secs": [], "agree": 0, "compared": 0, "storm_smaller": 0}
                                 for c in CONF_NAMES}
     latest = (0.0, "")
@@ -114,7 +114,7 @@ def main() -> int:
         owed = d["inst"] * len(CONF_NAMES)
         print(f"{diag:>8} {grid_size(diag):>6} {d['inst']:>8} {d['done']:>9} {d['runs']:>5}/{owed:<6}")
     print()
-    print(f"{'conf':>22} {'complete':>9} {'timeout':>8} {'killed':>7} {'failed':>7} "
+    print(f"{'conf':>22} {'complete':>9} {'timeout':>8} {'killed':>7} {'skipped':>8} {'failed':>7} "
           f"{'median s':>9} {'worst s':>9} {'agree':>10}")
     for c in CONF_NAMES:
         s = by_conf[c]
@@ -123,7 +123,7 @@ def main() -> int:
         agree = "" if c == BASELINE else f"{s['agree']}/{s['compared']}"
         if c == "storm" and s["storm_smaller"]:
             agree += f" ({s['storm_smaller']} fewer)"
-        print(f"{c:>22} {s['complete']:>9} {s['timeout']:>8} {s['killed']:>7} {s['failed']:>7} "
+        print(f"{c:>22} {s['complete']:>9} {s['timeout']:>8} {s['killed']:>7} {s['skipped']:>8} {s['failed']:>7} "
               f"{med:>9.3f} {worst:>9.3f} {agree:>10}")
     return 0
 

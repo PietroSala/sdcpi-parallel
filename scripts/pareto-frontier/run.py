@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The frontier campaign: sdcpi pareto against Storm over the journal grid.
 
-    run.py                                  the campaign, round 1, two minutes
+    run.py                                  the campaign, round after round
     run.py --max-diagonal 3 --limit 4       a taste, four instances
-    run.py --round 2                        the timed-out runs again, doubled
+    run.py --round 2 --rounds 1             one round, the timed-out runs again
 
 Every instance of the grid of the journal paper is regenerated from the
 stable seed of stage 1 of storm-comparison-ablation, nothing is copied,
@@ -17,8 +17,17 @@ number of impacts, then the six modes, then the configurations, so that a cut
 at any moment leaves a record usable from the smallest instances up.
 Every run is recorded as it completes, one JSON per instance and
 configuration, and a run whose record exists is never repeated: the
-campaign resumes where it stopped. A later round runs again the runs of
-the previous round that timed out, with the timeout doubled.
+campaign resumes where it stopped.
+
+A cell of the grid is a diagonal, a number of impacts and a mode. A
+configuration that timed out on every instance of a cell, every process
+of the diagonal whatever its impacts, is dead for that number of impacts
+and that mode from the next diagonal on: its runs there are skipped and
+recorded as such, so that the sweep moves on to what can still close.
+When the sweep of the grid is over the driver starts the next round by
+itself, the timeout doubled, owing only the runs that timed out, were
+killed or were skipped, the rule applying again at the new timeout, and
+so on until a round owes nothing.
 """
 
 from __future__ import annotations
@@ -60,6 +69,7 @@ CONFS: list[tuple[str, list[str]]] = [("storm", [])] + [
     for w in WORKERS
 ]
 BASELINE = "biodivine-both-w1"
+UNDONE = ("timeout", "killed", "skipped")
 
 
 # The child in flight, so that a signal to the driver takes the child with
@@ -97,15 +107,16 @@ def key_of(n: int, i: int, k: int, d: int, m: str) -> str:
     return f"{n}-{i}-{k}-{d}-{m}"
 
 
+def pairs_of(diag: int) -> list[tuple[int, int]]:
+    return [(n, diag - n) for n in range(1, 11) if 1 <= diag - n <= 10]
+
+
 def instances(max_diagonal: int | None, dims: list[int], modes: list[str]):
     """The grid in the order of the campaign."""
     for diag in range(2, 21):
         if max_diagonal and diag > max_diagonal:
             return
-        for n in range(1, 11):
-            i = diag - n
-            if not 1 <= i <= 10:
-                continue
+        for n, i in pairs_of(diag):
             for k in range(1, 11):
                 for d in dims:
                     for m in modes:
@@ -139,6 +150,22 @@ class Campaign:
         for d in (self.instances, self.models, self.results):
             d.mkdir(parents=True, exist_ok=True)
         self.log = open(exp / "campaign.log", "a")
+        # The latest status of every run over the rounds up to this one, read
+        # once from the records and kept up to date as runs are written; the
+        # cells found dead, and the ones found complete and alive.
+        self.status: dict[tuple[str, str], tuple[int, str]] = {}
+        for f in self.results.glob("*/*.r*.json"):
+            if f.name.endswith(".pareto.json"):
+                continue
+            conf, rest = f.name.split(".", 1)
+            r = int(rest.split(".")[0][1:])
+            if r > self.round:
+                continue
+            key = (f.parent.name, conf)
+            if key not in self.status or self.status[key][0] < r:
+                self.status[key] = (r, json.loads(f.read_text()).get("status", "failed"))
+        self.dead: dict[tuple[str, int, str], int] = {}
+        self.alive: set[tuple[str, int, str, int]] = set()
 
     def say(self, line: str) -> None:
         print(line, flush=True)
@@ -202,6 +229,29 @@ class Campaign:
         path.parent.mkdir(parents=True, exist_ok=True)
         record.update(conf=conf, round=self.round, timeout=self.timeout, host=self.host)
         path.write_text(json.dumps(record, indent=1) + "\n")
+        self.status[(key, conf)] = (self.round, record["status"])
+
+    # -- the dead cells -----------------------------------------------------------
+
+    def dead_since(self, conf: str, d: int, m: str, diag: int) -> int | None:
+        """The diagonal below `diag` at which `conf` died for `d` impacts and
+        the mode `m`: a cell complete in the rounds so far on which every
+        instance is timed out, killed or skipped. `None` when it is alive."""
+        cell = (conf, d, m)
+        if cell in self.dead and self.dead[cell] < diag:
+            return self.dead[cell]
+        for prior in range(2, diag):
+            if (conf, d, m, prior) in self.alive:
+                continue
+            keys = [key_of(n, i, k, d, m) for n, i in pairs_of(prior) for k in range(1, 11)]
+            statuses = [self.status.get((key, conf)) for key in keys]
+            if any(st is None for st in statuses):
+                continue  # the cell is not complete yet
+            if all(st[1] in UNDONE for st in statuses):
+                self.dead[cell] = prior
+                return prior
+            self.alive.add((conf, d, m, prior))
+        return None
 
     # -- the runs --------------------------------------------------------------
 
@@ -256,11 +306,19 @@ class Campaign:
                 continue
             if not self.due(key, conf):
                 continue
+            since = self.dead_since(conf, d, m, n + i)
+            if since is not None:
+                record = {"tool": "storm" if conf == "storm" else "sdcpi", "status": "skipped",
+                          "seconds": 0.0, "points": [], "dead_since_diagonal": since}
+                self.write(key, conf, record)
+                self.say(f"{key:32} {conf:22} skipped, dead since diagonal {since}")
+                done += 1
+                continue
             yaml = self.instance(n, i, k, d, m)
             record = self.run_storm(key, yaml) if conf == "storm" else self.run_ours(key, conf, extra, yaml)
             self.write(key, conf, record)
             points = record.get("points_found", len(record.get("points", [])))
-            self.say(f"{key:32} {conf:8} {record['status']:9} {points:>4} points "
+            self.say(f"{key:32} {conf:22} {record['status']:9} {points:>4} points "
                      f"{record['seconds']:9.3f} s")
             done += 1
         return done
@@ -271,7 +329,10 @@ def main() -> int:
     p.add_argument("--experiment", type=Path, default=HERE / "experiment",
                    help="where instances, models and records live (default experiment/)")
     p.add_argument("--round", type=int, default=1,
-                   help="round r runs again what timed out in round r-1, timeout doubled")
+                   help="the round to start from; round r owes what round r-1 left "
+                        "timed out, killed or skipped, at the timeout doubled")
+    p.add_argument("--rounds", type=int, default=None,
+                   help="how many rounds to run; default until a round owes nothing")
     p.add_argument("--timeout", type=float, default=120.0, help="seconds per run in round 1")
     p.add_argument("--max-diagonal", type=int, default=None,
                    help="nesting plus independence up to this; default the whole grid")
@@ -294,17 +355,29 @@ def main() -> int:
         if c not in dict(CONFS):
             p.error(f"unknown configuration {c}")
 
-    campaign = Campaign(a.experiment.resolve(), a.round, a.timeout, host_info())
-    campaign.say(f"round {a.round}, timeout {campaign.timeout:.0f} s, "
-                 f"{campaign.host['host']} {campaign.host['cpus']} cpus, "
-                 f"sdcpi {campaign.host['sdcpi_commit'][:12]}, {campaign.host['storm']}")
-    seen = 0
-    for n, i, k, d, m in instances(a.max_diagonal, a.dimensions, a.modes):
-        if a.limit is not None and seen >= a.limit:
+    host = host_info()
+    rnd = a.round
+    rounds = 0
+    while a.rounds is None or rounds < a.rounds:
+        campaign = Campaign(a.experiment.resolve(), rnd, a.timeout, host)
+        campaign.say(f"round {rnd}, timeout {campaign.timeout:.0f} s, "
+                     f"{host['host']} {host['cpus']} cpus, "
+                     f"sdcpi {host['sdcpi_commit'][:12]}, {host['storm']}")
+        seen = 0
+        runs = 0
+        for n, i, k, d, m in instances(a.max_diagonal, a.dimensions, a.modes):
+            if a.limit is not None and seen >= a.limit:
+                break
+            runs += campaign.run_instance(n, i, k, d, m, set(a.only) if a.only else None)
+            seen += 1
+        campaign.say(f"round {rnd} over {seen} instances, {runs} runs done")
+        rounds += 1
+        if runs == 0 and rounds > 1:
+            campaign.say("nothing owed, the campaign is complete")
             break
-        campaign.run_instance(n, i, k, d, m, set(a.only) if a.only else None)
-        seen += 1
-    campaign.say(f"round {a.round} over {seen} instances done")
+        if runs == 0:
+            break
+        rnd += 1
     return 0
 
 
