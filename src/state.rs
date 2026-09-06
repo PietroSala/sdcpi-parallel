@@ -34,6 +34,7 @@
 //! PRISM encoding of the same instance, an encoding that carries the progress of
 //! every internal node in full.
 
+use crate::num::{zeros, Num};
 use crate::tree::{Kind, Tree};
 
 pub const IDLE: i8 = -1;
@@ -62,10 +63,10 @@ pub struct Engine<'t> {
 /// One outcome of a macro step: the decisions it took, the impact it adds, the
 /// probability it multiplies, and the choice state it ends in.
 #[derive(Clone, Debug)]
-pub struct Outcome {
+pub struct Outcome<N: Num> {
     pub decisions: Vec<u32>,
-    pub impact: Vec<f64>,
-    pub prob: f64,
+    pub impact: Vec<N>,
+    pub prob: N::Prob,
     pub state: State,
     pub stop: Stop,
 }
@@ -208,7 +209,7 @@ impl<'t> Engine<'t> {
     /// a completion over the running tasks, every task at that time completes in
     /// this one step, and the cost is the sum of their impacts.
     #[inline]
-    fn fast_forward(&self, s: &mut [i8], impact: &mut [f64]) {
+    fn fast_forward<N: Num>(&self, s: &mut [i8], impact: &mut [N]) {
         let tree = self.tree;
         let mut t = i32::MAX;
         for &u in &tree.tasks {
@@ -229,9 +230,9 @@ impl<'t> Engine<'t> {
             let left = tree.node(u).duration as i32 - sv as i32;
             if left == t {
                 s[u as usize] = DONE;
-                let i = tree.impact(u);
+                let i = N::impact_of(tree, u);
                 for c in 0..tree.k {
-                    impact[c] += i[c];
+                    impact[c] = impact[c].add(&i[c]);
                 }
             } else {
                 s[u as usize] = (sv as i32 + t) as i8;
@@ -251,11 +252,15 @@ impl<'t> Engine<'t> {
     /// A macro step is one edge of the search and many transitions of the MDP.
     /// Nothing between two choice states is decided by a policy, so nothing
     /// between them has to be held.
-    pub fn macro_step(&self, start: State, prefix: Vec<u32>) -> Result<Vec<Outcome>, StepError> {
+    pub fn macro_step<N: Num>(
+        &self,
+        start: State,
+        prefix: Vec<u32>,
+    ) -> Result<Vec<Outcome<N>>, StepError> {
         let k = self.tree.k;
-        let mut out: Vec<Outcome> = Vec::new();
-        let mut stack: Vec<(State, Vec<u32>, Vec<f64>, f64)> =
-            vec![(start, prefix, vec![0.0; k], 1.0)];
+        let mut out: Vec<Outcome<N>> = Vec::new();
+        let mut stack: Vec<(State, Vec<u32>, Vec<N>, N::Prob)> =
+            vec![(start, prefix, zeros::<N>(k), N::prob_one())];
 
         while let Some((mut s, mut decisions, mut impact, mut prob)) = stack.pop() {
             loop {
@@ -285,15 +290,21 @@ impl<'t> Engine<'t> {
                             return Err(StepError::TooManyOutcomes(self.max_outcomes));
                         }
                         let n = self.tree.node(v);
+                        let p = N::prob_of(self.tree, v);
                         let mut s_high = s.clone();
                         s_high[n.high as usize] = 0;
                         let mut d_high = decisions.clone();
                         d_high.push(n.high);
-                        stack.push((s_high, d_high, impact.clone(), prob * (1.0 - n.prob)));
+                        stack.push((
+                            s_high,
+                            d_high,
+                            impact.clone(),
+                            N::prob_mul(&prob, &N::prob_complement(&p)),
+                        ));
 
                         s[n.low as usize] = 0;
                         decisions.push(n.low);
-                        prob *= n.prob;
+                        prob = N::prob_mul(&prob, &p);
                     }
                     Some((2, v)) => self.down(&mut s, v),
                     Some((3, v)) => self.up(&mut s, v),
@@ -307,13 +318,13 @@ impl<'t> Engine<'t> {
 
     /// The macro step out of the initial state, which no action precedes: the
     /// `InitHistories` of the board.
-    pub fn initial_outcomes(&self) -> Result<Vec<Outcome>, StepError> {
+    pub fn initial_outcomes<N: Num>(&self) -> Result<Vec<Outcome<N>>, StepError> {
         self.macro_step(self.initial_state(), Vec::new())
     }
 
     /// The macro step out of the choice state `s` under the action that starts
     /// the child `action` of its witness.
-    pub fn step_action(&self, s: &[i8], action: u32) -> Result<Vec<Outcome>, StepError> {
+    pub fn step_action<N: Num>(&self, s: &[i8], action: u32) -> Result<Vec<Outcome<N>>, StepError> {
         let mut next = s.to_vec();
         next[action as usize] = 0;
         self.macro_step(next, vec![action])

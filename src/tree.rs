@@ -20,6 +20,10 @@
 use std::fmt;
 use std::path::Path;
 
+use num_rational::BigRational;
+
+use crate::num::parse_decimal;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Task,
@@ -84,6 +88,12 @@ pub struct Tree {
     /// sitting at `id * k`. The rows of the internal nodes are left at zero and
     /// never read.
     pub impacts: Vec<f64>,
+    /// The same impacts as exact rationals, parsed from the decimal text of
+    /// the file, one row of `k` per identifier as `impacts`.
+    pub impacts_exact: Vec<BigRational>,
+    /// The probability of the low branch of the nature node `id` at
+    /// `probs_exact[id]`, as an exact rational; zero elsewhere, never read.
+    pub probs_exact: Vec<BigRational>,
     /// The identifiers of the tasks, in increasing order.
     pub tasks: Vec<u32>,
     /// The identifiers of the XOR nodes, in increasing order.
@@ -109,6 +119,22 @@ impl Tree {
     pub fn impact(&self, id: u32) -> &[f64] {
         let a = id as usize * self.k;
         &self.impacts[a..a + self.k]
+    }
+
+    #[inline]
+    pub fn impact_exact(&self, id: u32) -> &[BigRational] {
+        let a = id as usize * self.k;
+        &self.impacts_exact[a..a + self.k]
+    }
+
+    #[inline]
+    pub fn prob_exact(&self, id: u32) -> &BigRational {
+        &self.probs_exact[id as usize]
+    }
+
+    /// The identifiers of the nature nodes, in increasing order.
+    pub fn natures(&self) -> Vec<u32> {
+        self.xors.iter().copied().filter(|&v| self.kind(v) == Kind::Nature).collect()
     }
 
     /// The sum of the impacts of every task, which Corollary 3 gives as a bound
@@ -171,6 +197,8 @@ struct Parser<'a> {
     // Filled as the tree is walked; `nodes[0]` is the filler.
     nodes: Vec<Node>,
     impacts: Vec<f64>,
+    impacts_exact: Vec<BigRational>,
+    probs_exact: Vec<BigRational>,
     names: Vec<String>,
 }
 
@@ -189,6 +217,8 @@ impl<'a> Parser<'a> {
             meta: Meta::default(),
             nodes: Vec::new(),
             impacts: Vec::new(),
+            impacts_exact: Vec::new(),
+            probs_exact: Vec::new(),
             names: Vec::new(),
         }
     }
@@ -224,6 +254,8 @@ impl<'a> Parser<'a> {
             n_nodes + 1
         ];
         self.impacts = vec![0.0; (n_nodes + 1) * k];
+        self.impacts_exact = vec![BigRational::from_integer(0.into()); (n_nodes + 1) * k];
+        self.probs_exact = vec![BigRational::from_integer(0.into()); n_nodes + 1];
         self.names = vec![String::new(); n_nodes + 1];
 
         let root = self.node(0)?;
@@ -235,6 +267,8 @@ impl<'a> Parser<'a> {
             n_tasks: self.meta.tasks,
             k,
             impacts: std::mem::take(&mut self.impacts),
+            impacts_exact: std::mem::take(&mut self.impacts_exact),
+            probs_exact: std::mem::take(&mut self.probs_exact),
             tasks: Vec::new(),
             xors: Vec::new(),
             task_names: std::mem::take(&mut self.names),
@@ -337,7 +371,7 @@ impl<'a> Parser<'a> {
         } else {
             String::new()
         };
-        let prob = if kind == Kind::Nature {
+        let (prob, prob_exact) = if kind == Kind::Nature {
             let p: f64 = kind_value
                 .parse()
                 .map_err(|_| ParseError::new(self.at + 1, format!("{kind_value:?} is not a probability")))?;
@@ -346,9 +380,13 @@ impl<'a> Parser<'a> {
                     "a nature node carries {p}, and Definition 3 asks for a probability in (0,1)"
                 ));
             }
-            p
+            let exact = match parse_decimal(kind_value) {
+                Some(r) => r,
+                None => return self.err(format!("{kind_value:?} is not a decimal probability")),
+            };
+            (p, Some(exact))
         } else {
-            0.0
+            (0.0, None)
         };
         self.at += 1;
 
@@ -357,6 +395,7 @@ impl<'a> Parser<'a> {
         let mut id: Option<u32> = None;
         let mut duration: i16 = 0;
         let mut impact: Option<Vec<f64>> = None;
+        let mut impact_exact: Option<Vec<BigRational>> = None;
         let mut low = 0u32;
         let mut high = 0u32;
 
@@ -401,6 +440,7 @@ impl<'a> Parser<'a> {
                 }
                 "impact" => {
                     impact = Some(self.vector(value)?);
+                    impact_exact = Some(self.vector_exact(value)?);
                     self.at += 1;
                 }
                 "low" => {
@@ -442,11 +482,18 @@ impl<'a> Parser<'a> {
             }
             let a = id as usize * self.meta.dimensions;
             self.impacts[a..a + self.meta.dimensions].copy_from_slice(&vector);
+            let exact = impact_exact.unwrap_or_default();
+            for (c, r) in exact.into_iter().enumerate() {
+                self.impacts_exact[a + c] = r;
+            }
         } else if low == 0 || high == 0 {
             return self.err("an internal node is missing a branch");
         }
 
         self.names[id as usize] = task_name;
+        if let Some(r) = prob_exact {
+            self.probs_exact[id as usize] = r;
+        }
         self.nodes[id as usize] = Node {
             kind,
             low,
@@ -484,6 +531,31 @@ impl<'a> Parser<'a> {
                 ));
             }
             out.push(x);
+        }
+        Ok(out)
+    }
+
+    fn vector_exact(&self, value: &str) -> Result<Vec<BigRational>, ParseError> {
+        let inner = value
+            .trim()
+            .strip_prefix('[')
+            .and_then(|v| v.strip_suffix(']'))
+            .ok_or_else(|| ParseError::new(self.at + 1, format!("{value:?} is not a vector")))?;
+        let mut out = Vec::with_capacity(self.meta.dimensions);
+        for piece in inner.split(',') {
+            let piece = piece.trim();
+            if piece.is_empty() {
+                continue;
+            }
+            match parse_decimal(piece) {
+                Some(r) => out.push(r),
+                None => {
+                    return Err(ParseError::new(
+                        self.at + 1,
+                        format!("{piece:?} is not a decimal number"),
+                    ))
+                }
+            }
         }
         Ok(out)
     }

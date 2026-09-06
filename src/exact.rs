@@ -45,11 +45,11 @@ impl From<StepError> for ExactError {
 /// every choice state the process can reach: the largest difference between
 /// `U_s` and the greatest expected impact still to be paid from `s`, and between
 /// `L_s` and the least.
-pub fn tightness<'a>(store: &Store<'a>, max_states: usize) -> Result<(f64, f64, usize), ExactError> {
+pub fn tightness<'a>(store: &Store<'a, f64>, max_states: usize) -> Result<(f64, f64, usize), ExactError> {
     let k = store.tree.k;
     let initial = store.initial_histories()?;
     let mut memo: HashMap<usize, (Vec<f64>, Vec<f64>)> = HashMap::new();
-    let mut seen: Vec<&ChoiceState<'_>> = Vec::new();
+    let mut seen: Vec<&ChoiceState<'_, f64>> = Vec::new();
     for h in &initial {
         value(store, h.cs, &mut memo, max_states)?;
         collect(store, h.cs, &mut seen, &mut std::collections::HashSet::new())?;
@@ -57,7 +57,7 @@ pub fn tightness<'a>(store: &Store<'a>, max_states: usize) -> Result<(f64, f64, 
     let mut du: f64 = 0.0;
     let mut dl: f64 = 0.0;
     for cs in &seen {
-        let key = *cs as *const ChoiceState<'_> as usize;
+        let key = *cs as *const ChoiceState<'_, f64> as usize;
         if let Some((lo, hi)) = memo.get(&key) {
             for c in 0..k {
                 du = du.max((cs.upper[c] - hi[c]).abs());
@@ -69,12 +69,12 @@ pub fn tightness<'a>(store: &Store<'a>, max_states: usize) -> Result<(f64, f64, 
 }
 
 fn collect<'a>(
-    store: &Store<'a>,
-    cs: &'a ChoiceState<'a>,
-    out: &mut Vec<&'a ChoiceState<'a>>,
+    store: &Store<'a, f64>,
+    cs: &'a ChoiceState<'a, f64>,
+    out: &mut Vec<&'a ChoiceState<'a, f64>>,
     seen: &mut std::collections::HashSet<usize>,
 ) -> Result<(), ExactError> {
-    let key = cs as *const ChoiceState<'_> as usize;
+    let key = cs as *const ChoiceState<'_, f64> as usize;
     if !seen.insert(key) {
         return Ok(());
     }
@@ -91,7 +91,7 @@ fn collect<'a>(
     Ok(())
 }
 
-pub fn optima<'a>(store: &Store<'a>, max_states: usize) -> Result<Optima, ExactError> {
+pub fn optima<'a>(store: &Store<'a, f64>, max_states: usize) -> Result<Optima, ExactError> {
     let k = store.tree.k;
     let initial = store.initial_histories()?;
     let mut memo: HashMap<usize, (Vec<f64>, Vec<f64>)> = HashMap::new();
@@ -111,12 +111,12 @@ pub fn optima<'a>(store: &Store<'a>, max_states: usize) -> Result<Optima, ExactE
 /// The least and the greatest expected impact still to be paid from a choice
 /// state, each component optimised on its own, as a per-component question is.
 fn value<'a>(
-    store: &Store<'a>,
-    cs: &'a ChoiceState<'a>,
+    store: &Store<'a, f64>,
+    cs: &'a ChoiceState<'a, f64>,
     memo: &mut HashMap<usize, (Vec<f64>, Vec<f64>)>,
     max_states: usize,
 ) -> Result<(Vec<f64>, Vec<f64>), ExactError> {
-    let key = cs as *const ChoiceState<'_> as usize;
+    let key = cs as *const ChoiceState<'_, f64> as usize;
     if let Some(found) = memo.get(&key) {
         return Ok(found.clone());
     }

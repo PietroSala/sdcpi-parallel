@@ -12,6 +12,11 @@ description = "On-the-fly strategy synthesis for BPMN+CPI processes"
 # instance format, the seeded generator, the concurrent tables and the worker
 # stacks, is written here.
 [dependencies]
+biodivine-lib-bdd = "0.6"
+num-bigint = "0.4"
+num-rational = "0.4"
+num-traits = "0.2"
+oxidd = "0.12"
 
 [profile.release]
 opt-level = 3

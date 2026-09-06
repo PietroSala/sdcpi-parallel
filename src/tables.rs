@@ -25,6 +25,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::arena::Arena;
 use crate::bound::bounds;
+use crate::num::{zeros, Num};
 use crate::state::{Engine, StepError, Stop};
 use crate::tree::Tree;
 
@@ -110,25 +111,25 @@ pub enum Branch {
 /// One outcome of the macro step out of a choice state under one action: the
 /// decisions it takes, the impact to be added, the probability to be multiplied,
 /// and the choice state it ends in.
-pub struct Extension<'a> {
+pub struct Extension<'a, N: Num> {
     pub decisions: Box<[u32]>,
-    pub impact: Box<[f64]>,
-    pub prob: f64,
-    pub cs: &'a ChoiceState<'a>,
+    pub impact: Box<[N]>,
+    pub prob: N::Prob,
+    pub cs: &'a ChoiceState<'a, N>,
 }
 
-pub struct ChoiceState<'a> {
+pub struct ChoiceState<'a, N: Num> {
     pub state: Box<[i8]>,
     pub stop: Stop,
     /// `U_s`, from Definition 12.
-    pub upper: Box<[f64]>,
+    pub upper: Box<[N]>,
     /// `L_s`, from Definition 12.
-    pub lower: Box<[f64]>,
-    low: OnceLock<&'a [Extension<'a>]>,
-    high: OnceLock<&'a [Extension<'a>]>,
+    pub lower: Box<[N]>,
+    low: OnceLock<&'a [Extension<'a, N>]>,
+    high: OnceLock<&'a [Extension<'a, N>]>,
 }
 
-impl<'a> ChoiceState<'a> {
+impl<'a, N: Num> ChoiceState<'a, N> {
     #[inline]
     pub fn is_final(&self) -> bool {
         matches!(self.stop, Stop::Final)
@@ -157,22 +158,22 @@ impl<'a> ChoiceState<'a> {
 /// since they carry the impact and the probability of this path. Two branches of
 /// the computation tree that decided an earlier choice differently reach the
 /// same history all the same, and then they share this too.
-pub struct Expansion<'a> {
+pub struct Expansion<'a, N: Num> {
     /// The children that are still open, which go into the frontier.
-    pub open_children: Box<[&'a History<'a>]>,
+    pub open_children: Box<[&'a History<'a, N>]>,
     /// What the children that are already final add to the closed part.
-    pub closed_delta: Box<[f64]>,
+    pub closed_delta: Box<[N]>,
     /// What the open children add to the accepting sum.
-    pub open_e_delta: Box<[f64]>,
+    pub open_e_delta: Box<[N]>,
     /// What the open children add to the rejecting sum.
-    pub open_l_delta: Box<[f64]>,
+    pub open_l_delta: Box<[N]>,
     /// How many children are already final. They leave no trace in the frontier
     /// beyond their contribution to the closed part, so a frontier that wants to
     /// say how many histories it holds has to be told their number here.
     pub closed_count: usize,
 }
 
-pub struct History<'a> {
+pub struct History<'a, N: Num> {
     /// A serial number, which gives the frontier an order that does not depend
     /// on where a record happens to sit in memory.
     pub id: u64,
@@ -180,22 +181,22 @@ pub struct History<'a> {
     /// passed, choice and nature alike.
     pub dh: Box<[u32]>,
     /// `I_dh`, the impact accumulated along the path.
-    pub impact: Box<[f64]>,
+    pub impact: Box<[N]>,
     /// `P_dh`, the product of the transition probabilities along the path.
-    pub prob: f64,
+    pub prob: N::Prob,
     /// The choice state the path ends in, shared with every other history that
     /// ends there.
-    pub cs: &'a ChoiceState<'a>,
+    pub cs: &'a ChoiceState<'a, N>,
     /// `P_dh * (I_dh + U_cs)`, the contribution to the accepting sum of any
     /// frontier that holds this history.
-    pub e_hat: Box<[f64]>,
+    pub e_hat: Box<[N]>,
     /// `P_dh * (I_dh + L_cs)`, the contribution to the rejecting sum.
-    pub l_hat: Box<[f64]>,
-    low: OnceLock<&'a Expansion<'a>>,
-    high: OnceLock<&'a Expansion<'a>>,
+    pub l_hat: Box<[N]>,
+    low: OnceLock<&'a Expansion<'a, N>>,
+    high: OnceLock<&'a Expansion<'a, N>>,
 }
 
-impl<'a> History<'a> {
+impl<'a, N: Num> History<'a, N> {
     #[inline]
     pub fn is_open(&self) -> bool {
         !self.cs.is_final()
@@ -208,15 +209,15 @@ impl<'a> History<'a> {
 
 /// Everything the tables own, gathered so that one value can be created before
 /// the store and outlive every reference the search hands around.
-pub struct Records<'a> {
-    pub choice_states: Arena<ChoiceState<'a>>,
-    pub histories: Arena<History<'a>>,
-    pub expansions: Arena<Expansion<'a>>,
-    pub extensions: Arena<Box<[Extension<'a>]>>,
+pub struct Records<'a, N: Num> {
+    pub choice_states: Arena<ChoiceState<'a, N>>,
+    pub histories: Arena<History<'a, N>>,
+    pub expansions: Arena<Expansion<'a, N>>,
+    pub extensions: Arena<Box<[Extension<'a, N>]>>,
 }
 
-impl<'a> Records<'a> {
-    pub fn new() -> Records<'a> {
+impl<'a, N: Num> Records<'a, N> {
+    pub fn new() -> Records<'a, N> {
         Records {
             choice_states: Arena::new(),
             histories: Arena::new(),
@@ -226,8 +227,8 @@ impl<'a> Records<'a> {
     }
 }
 
-impl<'a> Default for Records<'a> {
-    fn default() -> Records<'a> {
+impl<'a, N: Num> Default for Records<'a, N> {
+    fn default() -> Records<'a, N> {
         Records::new()
     }
 }
@@ -236,12 +237,12 @@ impl<'a> Default for Records<'a> {
 // the store
 // ---------------------------------------------------------------------------
 
-pub struct Store<'a> {
+pub struct Store<'a, N: Num> {
     pub tree: &'a Tree,
     pub engine: Engine<'a>,
-    records: &'a Records<'a>,
-    cs_shards: Box<[Mutex<HashMap<Box<[i8]>, &'a ChoiceState<'a>, FxBuild>>]>,
-    hist_shards: Box<[Mutex<HashMap<Box<[u32]>, &'a History<'a>, FxBuild>>]>,
+    records: &'a Records<'a, N>,
+    cs_shards: Box<[Mutex<HashMap<Box<[i8]>, &'a ChoiceState<'a, N>, FxBuild>>]>,
+    hist_shards: Box<[Mutex<HashMap<Box<[u32]>, &'a History<'a, N>, FxBuild>>]>,
     next_id: AtomicU64,
     pub cs_made: AtomicUsize,
     pub hist_made: AtomicUsize,
@@ -249,8 +250,8 @@ pub struct Store<'a> {
     pub outcomes: AtomicUsize,
 }
 
-impl<'a> Store<'a> {
-    pub fn new(tree: &'a Tree, records: &'a Records<'a>, shards: usize) -> Store<'a> {
+impl<'a, N: Num> Store<'a, N> {
+    pub fn new(tree: &'a Tree, records: &'a Records<'a, N>, shards: usize) -> Store<'a, N> {
         let shards = shards.max(1);
         Store {
             tree,
@@ -268,7 +269,7 @@ impl<'a> Store<'a> {
 
     /// The choice state of `state`, created if it is met for the first time.
     /// Its two bounds are computed here, once, whoever gets there first.
-    pub fn intern_cs(&self, state: Vec<i8>, stop: Stop) -> &'a ChoiceState<'a> {
+    pub fn intern_cs(&self, state: Vec<i8>, stop: Stop) -> &'a ChoiceState<'a, N> {
         let shard = shard_of_state(&state, self.cs_shards.len());
         {
             let map = self.cs_shards[shard].lock().unwrap();
@@ -279,7 +280,7 @@ impl<'a> Store<'a> {
         // Computed outside the lock: the recursion is a walk of the whole tree,
         // and holding a shard while it runs would stall every other key that
         // hashes there.
-        let b = bounds(self.tree, &state);
+        let b = bounds::<N>(self.tree, &state);
         let record = ChoiceState {
             state: state.clone().into_boxed_slice(),
             stop,
@@ -302,9 +303,9 @@ impl<'a> Store<'a> {
     /// demand and shared from then on.
     pub fn extensions(
         &self,
-        cs: &'a ChoiceState<'a>,
+        cs: &'a ChoiceState<'a, N>,
         branch: Branch,
-    ) -> Result<&'a [Extension<'a>], StepError> {
+    ) -> Result<&'a [Extension<'a, N>], StepError> {
         let cell = match branch {
             Branch::Low => &cs.low,
             Branch::High => &cs.high,
@@ -313,10 +314,10 @@ impl<'a> Store<'a> {
             return Ok(found);
         }
         let action = cs.action(self.tree, branch);
-        let outcomes = self.engine.step_action(&cs.state, action)?;
+        let outcomes = self.engine.step_action::<N>(&cs.state, action)?;
         self.macro_steps.fetch_add(1, Ordering::Relaxed);
         self.outcomes.fetch_add(outcomes.len(), Ordering::Relaxed);
-        let built: Box<[Extension<'a>]> = outcomes
+        let built: Box<[Extension<'a, N>]> = outcomes
             .into_iter()
             .map(|o| Extension {
                 decisions: o.decisions.into_boxed_slice(),
@@ -325,7 +326,7 @@ impl<'a> Store<'a> {
                 cs: self.intern_cs(o.state, o.stop),
             })
             .collect();
-        let placed: &'a [Extension<'a>] = self.records.extensions.alloc(built);
+        let placed: &'a [Extension<'a, N>] = self.records.extensions.alloc(built);
         Ok(cell.get_or_init(|| placed))
     }
 
@@ -336,10 +337,10 @@ impl<'a> Store<'a> {
     pub fn intern_history(
         &self,
         dh: Vec<u32>,
-        impact: Vec<f64>,
-        prob: f64,
-        cs: &'a ChoiceState<'a>,
-    ) -> &'a History<'a> {
+        impact: Vec<N>,
+        prob: N::Prob,
+        cs: &'a ChoiceState<'a, N>,
+    ) -> &'a History<'a, N> {
         let shard = shard_of_dh(&dh, self.hist_shards.len());
         {
             let map = self.hist_shards[shard].lock().unwrap();
@@ -351,8 +352,8 @@ impl<'a> Store<'a> {
         let mut e_hat = Vec::with_capacity(k);
         let mut l_hat = Vec::with_capacity(k);
         for c in 0..k {
-            e_hat.push(prob * (impact[c] + cs.upper[c]));
-            l_hat.push(prob * (impact[c] + cs.lower[c]));
+            e_hat.push(impact[c].add(&cs.upper[c]).scale(&prob));
+            l_hat.push(impact[c].add(&cs.lower[c]).scale(&prob));
         }
         let record = History {
             id: self.next_id.fetch_add(1, Ordering::Relaxed),
@@ -381,9 +382,9 @@ impl<'a> Store<'a> {
     /// looking it up once per expansion rather than once per history.
     pub fn children(
         &self,
-        elected: &'a History<'a>,
+        elected: &'a History<'a, N>,
         branch: Branch,
-    ) -> Result<&'a Expansion<'a>, StepError> {
+    ) -> Result<&'a Expansion<'a, N>, StepError> {
         let cell = match branch {
             Branch::Low => &elected.low,
             Branch::High => &elected.high,
@@ -393,28 +394,28 @@ impl<'a> Store<'a> {
         }
         let k = self.tree.k;
         let exts = self.extensions(elected.cs, branch)?;
-        let mut open_children: Vec<&'a History<'a>> = Vec::with_capacity(exts.len());
-        let mut closed_delta = vec![0.0; k];
-        let mut open_e_delta = vec![0.0; k];
-        let mut open_l_delta = vec![0.0; k];
+        let mut open_children: Vec<&'a History<'a, N>> = Vec::with_capacity(exts.len());
+        let mut closed_delta = zeros::<N>(k);
+        let mut open_e_delta = zeros::<N>(k);
+        let mut open_l_delta = zeros::<N>(k);
         for ext in exts.iter() {
             let mut dh = Vec::with_capacity(elected.dh.len() + ext.decisions.len());
             dh.extend_from_slice(&elected.dh);
             dh.extend_from_slice(&ext.decisions);
             let mut impact = Vec::with_capacity(k);
             for c in 0..k {
-                impact.push(elected.impact[c] + ext.impact[c]);
+                impact.push(elected.impact[c].add(&ext.impact[c]));
             }
-            let h = self.intern_history(dh, impact, elected.prob * ext.prob, ext.cs);
+            let h = self.intern_history(dh, impact, N::prob_mul(&elected.prob, &ext.prob), ext.cs);
             if h.is_open() {
                 for c in 0..k {
-                    open_e_delta[c] += h.e_hat[c];
-                    open_l_delta[c] += h.l_hat[c];
+                    open_e_delta[c] = open_e_delta[c].add(&h.e_hat[c]);
+                    open_l_delta[c] = open_l_delta[c].add(&h.l_hat[c]);
                 }
                 open_children.push(h);
             } else {
                 for c in 0..k {
-                    closed_delta[c] += h.e_hat[c];
+                    closed_delta[c] = closed_delta[c].add(&h.e_hat[c]);
                 }
             }
         }
@@ -431,8 +432,8 @@ impl<'a> Store<'a> {
 
     /// The histories reachable from the initial state without deciding
     /// anything: the label of the root of the computation tree.
-    pub fn initial_histories(&self) -> Result<Vec<&'a History<'a>>, StepError> {
-        let outcomes = self.engine.initial_outcomes()?;
+    pub fn initial_histories(&self) -> Result<Vec<&'a History<'a, N>>, StepError> {
+        let outcomes = self.engine.initial_outcomes::<N>()?;
         self.macro_steps.fetch_add(1, Ordering::Relaxed);
         self.outcomes.fetch_add(outcomes.len(), Ordering::Relaxed);
         Ok(outcomes

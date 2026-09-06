@@ -11,6 +11,7 @@ mod arena;
 mod parse;
 mod bound;
 mod exact;
+mod num;
 mod search;
 mod state;
 mod tables;
@@ -402,7 +403,7 @@ fn cmd_optima(args: &[String]) -> i32 {
         Ok(v) => v,
         Err(e) => return fail(&e),
     };
-    let records = tables::Records::new();
+    let records = tables::Records::<f64>::new();
     let store = Store::new(&tree, &records, 1);
     let max_states = args
         .flag("max-states")
@@ -561,7 +562,7 @@ fn cmd_determine(args: &[String]) -> i32 {
 
     let print_strategy = args.flag("print-strategy").is_some();
     let print_size = args.flag("print-size").is_some();
-    let cfg = Config {
+    let cfg = Config::<f64> {
         threshold: threshold.clone(),
         // recording costs nothing measurable, 1.7367 s against 1.7363 s on
         // an instance that searches for over a second, and without it the size
@@ -672,10 +673,10 @@ fn cmd_bound(args: &[String]) -> i32 {
         Ok(v) => v,
         Err(e) => return fail(&e),
     };
-    let records = tables::Records::new();
+    let records = tables::Records::<f64>::new();
     let store = Store::new(&tree, &records, 1);
     let engine_state = store.engine.initial_state();
-    let b = bound::bounds(&tree, &engine_state);
+    let b = bound::bounds::<f64>(&tree, &engine_state);
     println!("instance   {}", tree.meta.key);
     println!("U at s0    {}", fmt_vec(&b.upper));
     println!("L at s0    {}", fmt_vec(&b.lower));

@@ -18,6 +18,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::tables::{Branch, Expansion, History, Records, Store};
+use crate::num::{zeros, Num};
 use crate::tree::Tree;
 
 // ---------------------------------------------------------------------------
@@ -103,8 +104,8 @@ impl Steal {
     }
 }
 
-pub struct Config {
-    pub threshold: Vec<f64>,
+pub struct Config<N: Num> {
+    pub threshold: Vec<N>,
     /// Whether to keep the decisions taken, so that the strategy can be
     /// returned. When the caller only wants the answer there is no reason to
     /// build the chain: it costs an allocation and a shared counter per
@@ -152,9 +153,9 @@ pub struct Config {
 /// they are the same number by definition and one of the two tests has to
 /// answer.
 #[derive(Clone)]
-pub struct Frontier<'a> {
-    pub open: Box<[&'a History<'a>]>,
-    sums: Box<[f64]>,
+pub struct Frontier<'a, N: Num> {
+    pub open: Box<[&'a History<'a, N>]>,
+    sums: Box<[N]>,
     /// Every history the frontier holds, the final ones included. They are
     /// summed into the closed part and not kept, so counting them here is the
     /// only way to say how large a partial strategy is: `open` alone is zero
@@ -163,13 +164,13 @@ pub struct Frontier<'a> {
     total: usize,
 }
 
-impl<'a> Frontier<'a> {
+impl<'a, N: Num> Frontier<'a, N> {
     /// `E(F) = sum over F of P(h) (cost(h) + U_last(h))`, written into `out`.
     #[inline]
-    fn accepting(&self, out: &mut [f64]) {
+    fn accepting(&self, out: &mut [N]) {
         let k = out.len();
         for c in 0..k {
-            out[c] = self.sums[c] + self.sums[k + c];
+            out[c] = self.sums[c].add(&self.sums[k + c]);
         }
     }
 
@@ -180,39 +181,39 @@ impl<'a> Frontier<'a> {
     /// with `L` taken to be zero, and it is what remains when the lower bound is
     /// ablated away: arithmetic rather than a bound.
     #[inline]
-    fn accumulated(&self, out: &mut [f64]) {
+    fn accumulated(&self, out: &mut [N]) {
         let k = out.len();
-        out.copy_from_slice(&self.sums[..k]);
+        out.clone_from_slice(&self.sums[..k]);
     }
 
     /// `L(F) = sum over F of P(h) (cost(h) + L_last(h))`, written into `out`.
     #[inline]
-    fn rejecting(&self, out: &mut [f64]) {
+    fn rejecting(&self, out: &mut [N]) {
         let k = out.len();
         for c in 0..k {
-            out[c] = self.sums[c] + self.sums[2 * k + c];
+            out[c] = self.sums[c].add(&self.sums[2 * k + c]);
         }
     }
 
-    fn from_histories(k: usize, histories: &[&'a History<'a>]) -> Frontier<'a> {
-        let mut sums = vec![0.0; 3 * k];
+    fn from_histories(k: usize, histories: &[&'a History<'a, N>]) -> Frontier<'a, N> {
+        let mut sums = zeros::<N>(3 * k);
         let mut open = Vec::new();
         for h in histories {
             if h.is_open() {
                 for c in 0..k {
-                    sums[k + c] += h.e_hat[c];
-                    sums[2 * k + c] += h.l_hat[c];
+                    sums[k + c] = sums[k + c].add(&h.e_hat[c]);
+                    sums[2 * k + c] = sums[2 * k + c].add(&h.l_hat[c]);
                 }
                 open.push(*h);
             } else {
                 for c in 0..k {
-                    sums[c] += h.e_hat[c];
+                    sums[c] = sums[c].add(&h.e_hat[c]);
                 }
             }
         }
         if open.is_empty() {
             for c in k..3 * k {
-                sums[c] = 0.0;
+                sums[c] = N::zero();
             }
         }
         Frontier {
@@ -223,7 +224,7 @@ impl<'a> Frontier<'a> {
     }
 
     /// Replaces the elected history by the histories one action leads to.
-    fn expand(&self, k: usize, elected: &'a History<'a>, exp: &Expansion<'a>) -> Frontier<'a> {
+    fn expand(&self, k: usize, elected: &'a History<'a, N>, exp: &Expansion<'a, N>) -> Frontier<'a, N> {
         let mut open = Vec::with_capacity(self.open.len() + exp.open_children.len());
         for h in self.open.iter() {
             if h.id != elected.id {
@@ -233,13 +234,13 @@ impl<'a> Frontier<'a> {
         open.extend_from_slice(&exp.open_children);
         let mut sums = self.sums.to_vec();
         for c in 0..k {
-            sums[c] += exp.closed_delta[c];
-            sums[k + c] += exp.open_e_delta[c] - elected.e_hat[c];
-            sums[2 * k + c] += exp.open_l_delta[c] - elected.l_hat[c];
+            sums[c] = sums[c].add(&exp.closed_delta[c]);
+            sums[k + c] = sums[k + c].add(&exp.open_e_delta[c].sub(&elected.e_hat[c]));
+            sums[2 * k + c] = sums[2 * k + c].add(&exp.open_l_delta[c].sub(&elected.l_hat[c]));
         }
         if open.is_empty() {
             for c in k..3 * k {
-                sums[c] = 0.0;
+                sums[c] = N::zero();
             }
         }
         Frontier {
@@ -251,13 +252,8 @@ impl<'a> Frontier<'a> {
 }
 
 #[inline]
-fn leq(a: &[f64], b: &[f64], epsilon: f64) -> bool {
-    if epsilon == 0.0 {
-        return a.iter().zip(b).all(|(x, y)| x <= y);
-    }
-    a.iter()
-        .zip(b)
-        .all(|(x, y)| *x <= *y + epsilon * y.abs().max(1.0))
+fn leq<N: Num>(a: &[N], b: &[N], epsilon: f64) -> bool {
+    N::leq(a, b, epsilon)
 }
 
 // ---------------------------------------------------------------------------
@@ -271,18 +267,21 @@ pub struct SigmaNode {
     action: u32,
 }
 
-pub struct CtNode<'a> {
-    frontier: Frontier<'a>,
+pub struct CtNode<'a, N: Num> {
+    frontier: Frontier<'a, N>,
     sigma: Option<Arc<SigmaNode>>,
 }
 
 /// A deterministic policy, as the synthesis version of the problem asks for it:
 /// the branch taken at each history that was decided.
-pub struct Strategy {
+pub struct Strategy<N: Num> {
     pub decisions: Vec<(Vec<u32>, u32)>,
     pub frontier_size: usize,
     /// Every history of the winning frontier, final ones included.
     pub histories: usize,
+    /// `E(F)` on the winning frontier: what every completion of the partial
+    /// strategy pays at most, the certificate of the accept.
+    pub accepting: Vec<N>,
 }
 
 fn resolve(sigma: &Option<Arc<SigmaNode>>) -> Vec<(Vec<u32>, u32)> {
@@ -300,8 +299,8 @@ fn resolve(sigma: &Option<Arc<SigmaNode>>) -> Vec<(Vec<u32>, u32)> {
 // the answer
 // ---------------------------------------------------------------------------
 
-pub enum Answer {
-    Yes(Strategy),
+pub enum Answer<N: Num> {
+    Yes(Strategy<N>),
     No,
     Timeout,
     Failed(String),
@@ -322,25 +321,25 @@ pub struct Stats {
 // the workers
 // ---------------------------------------------------------------------------
 
-struct Stack<'a> {
-    items: Mutex<VecDeque<CtNode<'a>>>,
+struct Stack<'a, N: Num> {
+    items: Mutex<VecDeque<CtNode<'a, N>>>,
     len: AtomicUsize,
 }
 
-impl<'a> Stack<'a> {
-    fn new() -> Stack<'a> {
+impl<'a, N: Num> Stack<'a, N> {
+    fn new() -> Stack<'a, N> {
         Stack {
             items: Mutex::new(VecDeque::new()),
             len: AtomicUsize::new(0),
         }
     }
-    fn push(&self, node: CtNode<'a>) {
+    fn push(&self, node: CtNode<'a, N>) {
         let mut g = self.items.lock().unwrap();
         g.push_back(node);
         self.len.store(g.len(), Ordering::Release);
     }
     /// The owner takes from the top.
-    fn pop(&self) -> Option<CtNode<'a>> {
+    fn pop(&self) -> Option<CtNode<'a, N>> {
         if self.len.load(Ordering::Acquire) == 0 {
             return None;
         }
@@ -350,7 +349,7 @@ impl<'a> Stack<'a> {
         out
     }
     /// The successor in the ring takes from the bottom.
-    fn steal(&self) -> Option<CtNode<'a>> {
+    fn steal(&self) -> Option<CtNode<'a, N>> {
         if self.len.load(Ordering::Acquire) == 0 {
             return None;
         }
@@ -364,12 +363,12 @@ impl<'a> Stack<'a> {
     }
 }
 
-struct Shared<'a> {
-    store: Store<'a>,
-    cfg: Config,
-    stacks: Vec<Stack<'a>>,
+struct Shared<'a, N: Num> {
+    store: Store<'a, N>,
+    cfg: Config<N>,
+    stacks: Vec<Stack<'a, N>>,
     stop: AtomicBool,
-    result: Mutex<Option<Answer>>,
+    result: Mutex<Option<Answer<N>>>,
     idle: Mutex<usize>,
     wake: Condvar,
     /// How many workers are inside `wait`. A push has to wake somebody only when
@@ -382,8 +381,8 @@ struct Shared<'a> {
     deadline: Option<Instant>,
 }
 
-impl<'a> Shared<'a> {
-    fn finish(&self, answer: Answer) {
+impl<'a, N: Num> Shared<'a, N> {
+    fn finish(&self, answer: Answer<N>) {
         let mut slot = self.result.lock().unwrap();
         if slot.is_none() {
             *slot = Some(answer);
@@ -394,7 +393,7 @@ impl<'a> Shared<'a> {
         self.wake.notify_all();
     }
 
-    fn push(&self, worker: usize, node: CtNode<'a>) {
+    fn push(&self, worker: usize, node: CtNode<'a, N>) {
         self.stacks[worker].push(node);
         if self.sleepers.load(Ordering::Acquire) != 0 {
             let _g = self.idle.lock().unwrap();
@@ -407,7 +406,7 @@ impl<'a> Shared<'a> {
         (worker + n - 1) % n
     }
 
-    fn take(&self, worker: usize) -> Option<CtNode<'a>> {
+    fn take(&self, worker: usize) -> Option<CtNode<'a, N>> {
         if let Some(n) = self.stacks[worker].pop() {
             return Some(n);
         }
@@ -496,20 +495,21 @@ impl Rng {
     }
 }
 
-fn elect<'a>(
-    open: &[&'a History<'a>],
+fn elect<'a, N: Num>(
+    open: &[&'a History<'a, N>],
     selection: Selection,
     rng: &mut Rng,
-) -> &'a History<'a> {
+) -> &'a History<'a, N> {
     match selection {
         Selection::Weighted => {
-            let total: f64 = open.iter().map(|h| h.prob).sum();
+            let total: f64 = open.iter().map(|h| N::prob_to_f64(&h.prob)).sum();
             let mut r = rng.unit() * total;
             for h in open {
-                if r < h.prob {
+                let w = N::prob_to_f64(&h.prob);
+                if r < w {
                     return h;
                 }
-                r -= h.prob;
+                r -= w;
             }
             // Floating point can leave a remainder past the last history; the
             // draw then meant the last one.
@@ -520,7 +520,7 @@ fn elect<'a>(
     }
 }
 
-fn work<'a>(shared: &Shared<'a>, worker: usize) {
+fn work<'a, N: Num>(shared: &Shared<'a, N>, worker: usize) {
     let mut rng = Rng::new(shared.cfg.seed ^ (worker as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
     loop {
         if shared.stop.load(Ordering::Relaxed) {
@@ -551,18 +551,18 @@ fn work<'a>(shared: &Shared<'a>, worker: usize) {
 /// has something to take and the owner pays the lock once per theft rather than
 /// once per expansion. The item handed over is the **oldest** the worker holds,
 /// which in a depth-first search is the largest subtree left to do.
-fn run<'a>(shared: &Shared<'a>, worker: usize, first: CtNode<'a>, rng: &mut Rng) {
+fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, rng: &mut Rng) {
     let store = &shared.store;
     let cfg = &shared.cfg;
     let k = store.tree.k;
-    let mut scratch = vec![0.0; k];
-    let mut local: VecDeque<CtNode<'a>> = VecDeque::new();
+    let mut scratch = zeros::<N>(k);
+    let mut local: VecDeque<CtNode<'a, N>> = VecDeque::new();
     let mut node = first;
     let mut expanded_here: u64 = 0;
     let mut peak_here: u64 = 0;
     // The counters are local and are published on the way out: an atomic add per
     // expansion, shared by every worker, is a cache line every core fights over.
-    let publish = |shared: &Shared<'a>, e: u64, p: u64| {
+    let publish = |shared: &Shared<'a, N>, e: u64, p: u64| {
         shared.expanded.fetch_add(e, Ordering::Relaxed);
         shared.peak_open.fetch_max(p, Ordering::Relaxed);
     };
@@ -596,6 +596,7 @@ fn run<'a>(shared: &Shared<'a>, worker: usize, first: CtNode<'a>, rng: &mut Rng)
                     decisions: resolve(&node.sigma),
                     frontier_size: open_now as usize,
                     histories: node.frontier.total,
+                    accepting: scratch.clone(),
                 }));
                 return;
             }
@@ -692,12 +693,12 @@ fn run<'a>(shared: &Shared<'a>, worker: usize, first: CtNode<'a>, rng: &mut Rng)
 }
 
 /// Runs the search on one instance and one threshold.
-pub fn search(tree: &Tree, cfg: Config) -> (Answer, Stats) {
+pub fn search<N: Num>(tree: &Tree, cfg: Config<N>) -> (Answer<N>, Stats) {
     let records = Records::new();
     search_in(tree, &records, cfg)
 }
 
-fn search_in<'a>(tree: &'a Tree, records: &'a Records<'a>, cfg: Config) -> (Answer, Stats) {
+fn search_in<'a, N: Num>(tree: &'a Tree, records: &'a Records<'a, N>, cfg: Config<N>) -> (Answer<N>, Stats) {
     let started = Instant::now();
     let workers = cfg.workers.max(1);
     let deadline = cfg.timeout.map(|d| started + d);
