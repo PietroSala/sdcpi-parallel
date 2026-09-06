@@ -328,6 +328,9 @@ impl Library {
 }
 
 pub struct Options {
+    /// A budget of wall-clock time for the whole exploration; past it the
+    /// loop stops and the frontier is reported as partial.
+    pub time_limit: Option<Duration>,
     /// The tick, or `None` for the exact tick `1/D`.
     pub precision: Option<BigRational>,
     /// The components the frontier is taken over, the others left at their
@@ -413,6 +416,21 @@ fn accumulate(total: &mut Stats, st: &Stats) {
 }
 
 fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
+    let started = Instant::now();
+    // The time left, if a limit is set: `None` when the limit is spent.
+    let remaining = |started: &Instant| -> Option<Option<Duration>> {
+        match opts.time_limit {
+            None => Some(None),
+            Some(limit) => {
+                let spent = started.elapsed();
+                if spent >= limit {
+                    None
+                } else {
+                    Some(Some(limit - spent))
+                }
+            }
+        }
+    };
     let k = tree.k;
     let engine = Engine::new(tree);
     let s0 = engine.initial_state();
@@ -521,10 +539,22 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         let tx = grid.lexmin(&o, &unknown);
         obdd_time += t0.elapsed();
 
+        // A query never runs past the time left on the whole exploration.
+        let left = match remaining(&started) {
+            Some(left) => left,
+            None => {
+                status = Status::Timeout;
+                break;
+            }
+        };
         let budget: Vec<Exact> = (0..k).map(|i| Exact(grid.budget(i, &tx[i]))).collect();
         let mut cfg = opts.search.clone();
         cfg.threshold = budget;
         cfg.record_strategy = true;
+        cfg.timeout = match (cfg.timeout, left) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         let t1 = Instant::now();
         let (answer, st) = search::search::<Exact>(tree, cfg);
         search_time += t1.elapsed();

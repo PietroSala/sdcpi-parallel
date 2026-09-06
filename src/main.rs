@@ -62,7 +62,7 @@ sdcpi  on-the-fly strategy synthesis for BPMN+CPI processes
   sdcpi pareto    <instance> [--precision E] [--obdd-library L] [options]
   sdcpi parse     (<process> | --file F) [--out F]
   sdcpi to_prism  <instance> [--encode-history true|false] [--out F]
-  sdcpi to_objective <instance> (--B a,b,... | --B-file F) [--out F]
+  sdcpi to_objective <instance> (--B a,b,... | --B-file F | --pareto true) [--out F]
   sdcpi info      <instance>
   sdcpi bound     <instance>
   sdcpi optima    <instance>
@@ -99,7 +99,9 @@ options for to_objective
   question put to the model checker over the model of to_prism: one
   R{\"impactj\"}<=Bj [ F n<root>=-2 ] term per component, joined in one
   multi(...) property, every value kept exactly as written. The property is
-  written to standard output, or to --out F
+  written to standard output, or to --out F. With --pareto true no budget is
+  read and the property asks for the frontier instead, one
+  R{\"impactj\"}min=? [ F n<root>=-2 ] term per component
 
 options for determine
   --B a,b,...           the budget B, one value per component, or the named
@@ -139,7 +141,12 @@ options for pareto
   --obdd-library L      biodivine | oxidd                 (default biodivine)
   --components i,j,...  the frontier over these components only, the others
                         left at their upper bound       (default all)
-  --print-strategy 1    print the strategy behind every point
+  --time-limit SECS     stop the exploration after this many seconds in all
+                        and report the frontier found so far as partial; a
+                        query never runs past the time left
+  --json F              write the report to F as JSON as well
+  --print-strategy 1    print the strategy behind every point, and the
+                        decisions in the JSON report
 
 options for optima
   --max-states N        give up past this many choice states (default 2000000)
@@ -461,23 +468,35 @@ fn cmd_to_objective(args: &[String]) -> i32 {
         Ok(a) => a,
         Err(e) => return fail(&e),
     };
-    let (_path, tree) = match load(&args) {
+    let (_, tree) = match load(&args) {
         Ok(v) => v,
         Err(e) => return fail(&e),
     };
-    let spec = match budget_spec(&args) {
-        Ok(s) => s,
-        Err(e) => return fail(&e),
+    let pareto = match args.flag("pareto") {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(v) => return fail(&format!("--pareto wants true or false, found {v:?}")),
     };
-    let b = match resolve_b(spec, &tree.meta.impact_names, tree.k) {
-        Ok(v) => v,
-        Err(e) => return fail(&e),
+    let parts: Vec<String> = if pareto {
+        // The frontier of every expected impact, the question the model
+        // checker answers with points and no strategy.
+        (0..tree.k)
+            .map(|j| format!("R{{\"impact{j}\"}}min=? [ F n{}=-2 ]", tree.root))
+            .collect()
+    } else {
+        let spec = match budget_spec(&args) {
+            Ok(s) => s,
+            Err(e) => return fail(&e),
+        };
+        let b = match resolve_b(spec, &tree.meta.impact_names, tree.k) {
+            Ok(v) => v,
+            Err(e) => return fail(&e),
+        };
+        b.iter()
+            .enumerate()
+            .map(|(j, v)| format!("R{{\"impact{j}\"}}<={} [ F n{}=-2 ]", v.text, tree.root))
+            .collect()
     };
-    let parts: Vec<String> = b
-        .iter()
-        .enumerate()
-        .map(|(j, v)| format!("R{{\"impact{j}\"}}<={} [ F n{}=-2 ]", v.text, tree.root))
-        .collect();
     let prop = format!("multi({})\n", parts.join(", "));
     match args.flag("out") {
         Some(p) => match std::fs::write(p, &prop) {
@@ -797,11 +816,19 @@ fn cmd_pareto(args: &[String]) -> i32 {
             Some(out)
         }
     };
+    let time_limit = match args.flag("time-limit") {
+        None => None,
+        Some(t) => match t.parse::<f64>() {
+            Ok(v) if v > 0.0 => Some(Duration::from_secs_f64(v)),
+            _ => return fail(&format!("--time-limit wants a positive number of seconds, found {t:?}")),
+        },
+    };
     let print_strategy = args.flag("print-strategy").is_some();
     let started = Instant::now();
     let report = match pareto::frontier(
         &tree,
         pareto::Options {
+            time_limit,
             precision,
             components,
             library,
@@ -888,10 +915,119 @@ fn cmd_pareto(args: &[String]) -> i32 {
             None => println!("  witness      none"),
         }
     }
+    if let Some(path) = args.flag("json") {
+        let text = json_report(&tree, &report, elapsed, print_strategy);
+        if let Err(e) = std::fs::write(path, text) {
+            return fail(&format!("{path}: {e}"));
+        }
+    }
     match report.status {
         pareto::Status::Failed(_) => 1,
         _ => 0,
     }
+}
+
+/// The report of pareto as JSON, written by hand: the crate carries no
+/// serialiser and the shape is small. Rationals are strings, so that nothing
+/// is rounded on the way out.
+fn json_report(tree: &Tree, r: &pareto::Report, elapsed: Duration, decisions: bool) -> String {
+    fn esc(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 2);
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+    fn strs<T: ToString>(v: &[T]) -> String {
+        let parts: Vec<String> = v.iter().map(|x| esc(&x.to_string())).collect();
+        format!("[{}]", parts.join(", "))
+    }
+    fn nums<T: std::fmt::Display>(v: &[T]) -> String {
+        let parts: Vec<String> = v.iter().map(|x| x.to_string()).collect();
+        format!("[{}]", parts.join(", "))
+    }
+    let mut o = String::new();
+    o.push_str("{\n");
+    o.push_str(&format!("  \"instance\": {},\n", esc(&tree.meta.key)));
+    o.push_str(&format!("  \"library\": {},\n", esc(r.library)));
+    o.push_str(&format!("  \"tick\": {},\n", esc(&r.epsilon.to_string())));
+    o.push_str(&format!(
+        "  \"denominator\": {},\n",
+        match &r.denominator {
+            Some(d) => esc(&d.to_string()),
+            None => "null".to_string(),
+        }
+    ));
+    o.push_str(&format!("  \"components\": {},\n", nums(&r.components)));
+    o.push_str(&format!("  \"upper\": {},\n", strs(&r.upper)));
+    o.push_str(&format!("  \"lower\": {},\n", strs(&r.lower)));
+    o.push_str(&format!("  \"ticks\": {},\n", strs(&r.ticks)));
+    o.push_str(&format!("  \"bits\": {},\n", nums(&r.bits)));
+    o.push_str(&format!(
+        "  \"status\": {},\n",
+        esc(match &r.status {
+            pareto::Status::Complete => "complete",
+            pareto::Status::Timeout => "timeout",
+            pareto::Status::Failed(_) => "failed",
+        })
+    ));
+    if let pareto::Status::Failed(e) = &r.status {
+        o.push_str(&format!("  \"reason\": {},\n", esc(e)));
+    }
+    o.push_str(&format!("  \"queries\": {},\n", r.queries));
+    o.push_str(&format!("  \"accepts\": {},\n", r.accepts));
+    o.push_str(&format!("  \"fails\": {},\n", r.fails));
+    o.push_str(&format!("  \"witness_runs\": {},\n", r.witness_queries));
+    o.push_str(&format!("  \"seconds\": {:.6},\n", elapsed.as_secs_f64()));
+    o.push_str(&format!("  \"search_seconds\": {:.6},\n", r.search_time.as_secs_f64()));
+    o.push_str(&format!("  \"obdd_seconds\": {:.6},\n", r.obdd_time.as_secs_f64()));
+    o.push_str(&format!("  \"obdd_peak_size\": {},\n", r.max_size));
+    o.push_str(&format!("  \"expanded\": {},\n", r.search.expanded));
+    o.push_str(&format!("  \"choice_states\": {},\n", r.search.choice_states));
+    o.push_str(&format!("  \"histories\": {},\n", r.search.histories));
+    o.push_str(&format!("  \"peak_open\": {},\n", r.search.peak_open));
+    o.push_str("  \"points\": [\n");
+    for (i, p) in r.points.iter().enumerate() {
+        let approx: Vec<String> = p.value.iter().map(|v| format!("{:.9}", pareto::approx(v))).collect();
+        o.push_str("    {\n");
+        o.push_str(&format!("      \"value\": {},\n", strs(&p.value)));
+        o.push_str(&format!("      \"approx\": [{}],\n", approx.join(", ")));
+        o.push_str(&format!(
+            "      \"origin\": {},\n",
+            esc(&match p.origin {
+                pareto::Origin::Upper => "U".to_string(),
+                pareto::Origin::Axis(c) => format!("axis {c}"),
+                pareto::Origin::Query(n) => format!("query {n}"),
+            })
+        ));
+        match &p.witness {
+            Some(w) => {
+                o.push_str(&format!("      \"decisions\": {},\n", w.decisions.len()));
+                o.push_str(&format!("      \"histories\": {},\n", w.histories));
+                o.push_str(&format!("      \"open\": {}", w.open));
+                if decisions {
+                    let items: Vec<String> = w
+                        .decisions
+                        .iter()
+                        .map(|(dh, a)| format!("[{}, {a}]", nums(dh)))
+                        .collect();
+                    o.push_str(&format!(",\n      \"strategy\": [{}]", items.join(", ")));
+                }
+                o.push('\n');
+            }
+            None => o.push_str("      \"decisions\": null\n"),
+        }
+        o.push_str(if i + 1 < r.points.len() { "    },\n" } else { "    }\n" });
+    }
+    o.push_str("  ]\n}\n");
+    o
 }
 
 /// The two bounds at the initial state, and the two sums on the frontier the
