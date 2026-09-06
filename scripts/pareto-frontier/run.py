@@ -147,15 +147,31 @@ class Campaign:
             gen.build(n, i, k, d, m, SEED, self.instances)
         return path
 
-    def model(self, key: str, yaml: Path) -> tuple[Path, str]:
+    def objectives(self, yaml: Path) -> list[int]:
+        """The components whose total impact is not zero. A component that is
+        zero on every task is zero for every strategy, and Storm aborts with
+        a signal 11 when one of its reward structures is identically zero,
+        so those components stay out of its query; ours carries them at no
+        cost, and the two frontiers are compared on the components kept."""
+        info = subprocess.run([str(SDCPI), "info", str(yaml)], capture_output=True, text=True,
+                              check=True).stdout
+        line = next(l for l in info.splitlines() if l.startswith("total impact"))
+        totals = [float(x) for x in re.findall(r"-?\d+\.\d+", line)]
+        return [i for i, t in enumerate(totals) if t != 0.0]
+
+    def model(self, key: str, yaml: Path) -> tuple[Path, str, list[int]]:
         prism = self.models / f"{key}.prism"
         prop = self.models / f"{key}.prop"
         if not prism.exists():
             subprocess.run([str(SDCPI), "to_prism", str(yaml), "--out", str(prism)], check=True)
+        objectives = self.objectives(yaml)
         if not prop.exists():
-            subprocess.run([str(SDCPI), "to_objective", str(yaml), "--pareto", "true",
-                            "--out", str(prop)], check=True)
-        return prism, prop.read_text().strip()
+            full = subprocess.run([str(SDCPI), "to_objective", str(yaml), "--pareto", "true"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+            terms = full[len("multi("):-1].split(", ")
+            kept = [t for j, t in enumerate(terms) if j in objectives]
+            prop.write_text("multi(" + ", ".join(kept) + ")\n")
+        return prism, prop.read_text().strip(), objectives
 
     # -- the records ---------------------------------------------------------
 
@@ -183,14 +199,14 @@ class Campaign:
     # -- the runs --------------------------------------------------------------
 
     def run_storm(self, key: str, yaml: Path) -> dict:
-        prism, prop = self.model(key, yaml)
+        prism, prop, objectives = self.model(key, yaml)
         cmd = ["storm", "--prism", str(prism), "--prop", prop, "--purescheds", "--exact"]
         started = time.monotonic()
         code, out, err, killed = call(cmd, self.timeout)
         wall = time.monotonic() - started
         if killed:
             return {"tool": "storm", "status": "timeout", "seconds": wall, "command": cmd,
-                    "stdout_tail": (out + err)[-2000:]}
+                    "objectives": objectives, "stdout_tail": (out + err)[-2000:]}
         text = out + err
         points = [[x.strip() for x in m.group(1).split(",")]
                   for m in re.finditer(r"\(([^()]*)\)\s*approx\.", text)]
@@ -199,7 +215,7 @@ class Campaign:
         found = re.search(r"(\d+) Pareto optimal points found", text)
         status = "complete" if code == 0 and (found or points) else "failed"
         return {
-            "tool": "storm", "status": status, "seconds": wall,
+            "tool": "storm", "status": status, "seconds": wall, "objectives": objectives,
             "checking_seconds": float(checking.group(1)) if checking else None,
             "states": int(states.group(1)) if states else None,
             "points": points, "points_found": int(found.group(1)) if found else len(points),

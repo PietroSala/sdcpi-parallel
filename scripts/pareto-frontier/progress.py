@@ -39,12 +39,17 @@ def grid_size(diag: int) -> int:
     return pairs * 10 * 9 * len(MODES)
 
 
-def points_of(rec: dict) -> frozenset | None:
+def points_of(rec: dict, objectives: list[int] | None = None) -> frozenset | None:
+    """The frontier of a record as a set of exact tuples, projected on the
+    objectives Storm was asked, the components identically zero left out."""
     if rec.get("status") != "complete":
         return None
     if rec.get("tool") == "storm":
         return frozenset(tuple(p) for p in rec.get("points", []))
-    return frozenset(tuple(p["value"]) for p in rec.get("points", []))
+    pts = [p["value"] for p in rec.get("points", [])]
+    if objectives is not None:
+        pts = [[v[i] for i in objectives] for v in pts]
+    return frozenset(tuple(v) for v in pts)
 
 
 def main() -> int:
@@ -82,11 +87,15 @@ def main() -> int:
             if st == "complete":
                 s["secs"].append(r.get("seconds", 0.0))
                 if c != "w1" and ours is not None:
-                    pts = points_of(r)
+                    if c == "storm":
+                        pts = points_of(r)
+                        ours_here = points_of(recs["w1"], r.get("objectives"))
+                    else:
+                        pts, ours_here = points_of(r), ours
                     s["compared"] += 1
-                    if pts == ours:
+                    if pts == ours_here:
                         s["agree"] += 1
-                    elif c == "storm" and pts is not None and pts < ours:
+                    elif c == "storm" and pts is not None and pts < ours_here:
                         s["storm_smaller"] += 1
 
     total_runs = sum(d["runs"] for d in by_diag.values())
