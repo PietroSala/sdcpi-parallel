@@ -135,12 +135,18 @@ options for pareto
   The box [L, U] is discretised into ticks and explored with two OBDDs, an
   unknown point going to determine at every step; the search runs on exact
   rationals. Every option of determine but --B is forwarded.
-  --extract MODE        random | draw | loosest           (default random)
+  --extract MODE        random | draw | loosest | tightest (default random)
                         random draws an unknown point by a walk on the
                         diagram, seeded by --seed, and loosens it to a
                         maximal unknown point; draw keeps the drawn point
                         as it is; loosest takes the lexicographically
-                        smallest tick vector
+                        smallest tick vector, tightest the largest, where
+                        an accept is a point of the frontier itself
+  --certificate B       true, the default, reads the certificate of every
+                        refusal, the minimal rejecting sums of the leaves
+                        of the exhausted tree, and retires every budget
+                        below all of them; false retires the cone below
+                        the refused point alone
   --precision E         the tick of the grid; without it the tick is 1/D
                         with D a common denominator of every achievable
                         expected value, and the frontier is exact
@@ -650,6 +656,7 @@ impl SearchOptions {
         Config {
             threshold,
             record_strategy,
+            certificate: false,
             steal: self.steal,
             epsilon: self.epsilon,
             workers: self.workers,
@@ -728,7 +735,7 @@ fn run_determine<N: Num>(
         "answer         {}",
         match &answer {
             Answer::Yes(_) => "yes",
-            Answer::No => "no",
+            Answer::No(_) => "no",
             Answer::Timeout => "timeout",
             Answer::Failed(_) => "failed",
         }
@@ -750,7 +757,7 @@ fn run_determine<N: Num>(
         "outcome        {}",
         match &answer {
             Answer::Yes(_) => "1 strategy found",
-            Answer::No => "0 strategy not found",
+            Answer::No(_) => "0 strategy not found",
             Answer::Timeout => "- timed out, no answer",
             Answer::Failed(_) => "- failed, no answer",
         }
@@ -825,7 +832,12 @@ fn cmd_pareto(args: &[String]) -> i32 {
     let extract = match args.flag("extract").map(pareto::Extract::parse) {
         None => pareto::Extract::Random,
         Some(Some(e)) => e,
-        Some(None) => return fail("--extract wants random, draw or loosest"),
+        Some(None) => return fail("--extract wants random, draw, loosest or tightest"),
+    };
+    let certificate = match args.flag("certificate") {
+        None | Some("true") => true,
+        Some("false") => false,
+        Some(v) => return fail(&format!("--certificate wants true or false, found {v:?}")),
     };
     let time_limit = match args.flag("time-limit") {
         None => None,
@@ -844,7 +856,10 @@ fn cmd_pareto(args: &[String]) -> i32 {
             precision,
             components,
             library,
-            search: opts.config::<Exact>(Vec::new(), true),
+            search: Config {
+                certificate,
+                ..opts.config::<Exact>(Vec::new(), true)
+            },
         },
     ) {
         Ok(r) => r,
@@ -894,6 +909,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
     println!("accepts        {}", report.accepts);
     println!("fails          {}", report.fails);
     println!("witness runs   {}", report.witness_queries);
+    println!("certificates   {} refusals carried {} vectors", report.certified, report.cert_vectors);
     println!("seconds        {:.6}", elapsed.as_secs_f64());
     println!("search seconds {:.6}", report.search_time.as_secs_f64());
     println!("obdd seconds   {:.6}", report.obdd_time.as_secs_f64());
@@ -999,6 +1015,8 @@ fn json_report(tree: &Tree, r: &pareto::Report, elapsed: Duration, decisions: bo
     o.push_str(&format!("  \"accepts\": {},\n", r.accepts));
     o.push_str(&format!("  \"fails\": {},\n", r.fails));
     o.push_str(&format!("  \"witness_runs\": {},\n", r.witness_queries));
+    o.push_str(&format!("  \"certified_refusals\": {},\n", r.certified));
+    o.push_str(&format!("  \"certificate_vectors\": {},\n", r.cert_vectors));
     o.push_str(&format!("  \"seconds\": {:.6},\n", elapsed.as_secs_f64()));
     o.push_str(&format!("  \"search_seconds\": {:.6},\n", r.search_time.as_secs_f64()));
     o.push_str(&format!("  \"obdd_seconds\": {:.6},\n", r.obdd_time.as_secs_f64()));

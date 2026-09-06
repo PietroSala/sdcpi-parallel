@@ -348,6 +348,29 @@ impl Grid {
         }
     }
 
+    /// The lexicographically largest tick vector in `phi`, the walk of
+    /// `lexmin` taking the bit true whenever it can.
+    fn lexmax<O: Obdd>(&self, o: &O, phi: &O::F) -> Vec<BigUint> {
+        let mut cur = phi.clone();
+        let mut out = Vec::with_capacity(self.comps.len());
+        for vars in &self.comps {
+            let mut t = BigUint::zero();
+            for &v in vars {
+                let x = o.var(v);
+                let one = o.and(&cur, &x);
+                t <<= 1usize;
+                if o.is_sat(&one) {
+                    cur = one;
+                    t += 1u32;
+                } else {
+                    cur = o.and(&cur, &o.not(&x));
+                }
+            }
+            out.push(t);
+        }
+        out
+    }
+
     /// The lexicographically smallest tick vector in `phi`, one top-down walk
     /// through the variables in order: the bit is taken false whenever some
     /// point of `phi` agrees with the prefix so far and that bit.
@@ -447,6 +470,10 @@ pub enum Extract {
     Draw,
     /// The loosest one, the lexicographically smallest tick vector.
     Loosest,
+    /// The tightest one, the lexicographically largest tick vector, a
+    /// minimal unknown point: every point below it is known, so an accept
+    /// there has the point itself as its apex, a point of the frontier.
+    Tightest,
 }
 
 impl Extract {
@@ -455,6 +482,7 @@ impl Extract {
             "random" => Some(Extract::Random),
             "draw" => Some(Extract::Draw),
             "loosest" => Some(Extract::Loosest),
+            "tightest" => Some(Extract::Tightest),
             _ => None,
         }
     }
@@ -463,6 +491,7 @@ impl Extract {
             Extract::Random => "random",
             Extract::Draw => "draw",
             Extract::Loosest => "loosest",
+            Extract::Tightest => "tightest",
         }
     }
 }
@@ -547,6 +576,9 @@ pub struct Report {
     pub accepts: usize,
     pub fails: usize,
     pub witness_queries: usize,
+    /// The refusals that carried a certificate, and the vectors in them.
+    pub certified: usize,
+    pub cert_vectors: usize,
     pub max_size: usize,
     pub search_time: Duration,
     pub obdd_time: Duration,
@@ -654,6 +686,8 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     let mut queries = 0usize;
     let mut accepts = 0usize;
     let mut fails = 0usize;
+    let mut certified = 0usize;
+    let mut cert_vectors = 0usize;
     let mut max_size = 0usize;
     let mut status = Status::Complete;
 
@@ -702,6 +736,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
             }
             Extract::Draw => grid.random_point(&o, &unknown, &mut rng),
             Extract::Loosest => grid.lexmin(&o, &unknown),
+            Extract::Tightest => grid.lexmax(&o, &unknown),
         };
         obdd_time += t0.elapsed();
 
@@ -748,10 +783,23 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                     }),
                 });
             }
-            Answer::No => {
+            Answer::No(cert) => {
                 fails += 1;
                 let cone = grid.cone_below(&o, &tx);
                 unknown = o.and(&unknown, &o.not(&cone));
+                // Every strategy pays at least one of the vectors of the
+                // certificate, so a feasible budget lies above one of them:
+                // the unknown points outside every such cone are infeasible.
+                if !cert.is_empty() {
+                    certified += 1;
+                    cert_vectors += cert.len();
+                    let mut allowed = o.fls();
+                    for v in &cert {
+                        let tv: Vec<BigUint> = (0..k).map(|i| grid.tick_floor(i, &v[i].0)).collect();
+                        allowed = o.or(&allowed, &grid.cone_above(&o, &tv));
+                    }
+                    unknown = o.and(&unknown, &allowed);
+                }
             }
             Answer::Timeout => {
                 status = Status::Timeout;
@@ -840,6 +888,8 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         accepts,
         fails,
         witness_queries,
+        certified,
+        cert_vectors,
         max_size,
         search_time,
         obdd_time,

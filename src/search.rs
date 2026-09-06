@@ -127,6 +127,10 @@ pub struct Config<N: Num> {
     pub selection: Selection,
     pub seed: u64,
     pub timeout: Option<Duration>,
+    /// Whether a refusal carries its certificate: the Pareto-minimal
+    /// rejecting sums of the leaves of the exhausted tree, every strategy
+    /// paying at least one of them.
+    pub certificate: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +306,10 @@ fn resolve(sigma: &Option<Arc<SigmaNode>>) -> Vec<(Vec<u32>, u32)> {
 
 pub enum Answer<N: Num> {
     Yes(Strategy<N>),
-    No,
+    /// No strategy, with the certificate when it was asked for: the
+    /// Pareto-minimal rejecting sums over the leaves of the tree, so that a
+    /// budget below every one of them is infeasible as well.
+    No(Vec<Vec<N>>),
     Timeout,
     Failed(String),
 }
@@ -370,6 +377,7 @@ struct Shared<'a, N: Num> {
     stacks: Vec<Stack<'a, N>>,
     stop: AtomicBool,
     result: Mutex<Option<Answer<N>>>,
+    certificate: Mutex<Vec<Vec<N>>>,
     idle: Mutex<usize>,
     wake: Condvar,
     /// How many workers are inside `wait`. A push has to wake somebody only when
@@ -436,7 +444,7 @@ impl<'a, N: Num> Shared<'a, N> {
         self.sleepers.store(*idle, Ordering::Release);
         if *idle == self.stacks.len() {
             drop(idle);
-            self.finish(Answer::No);
+            self.finish(Answer::No(Vec::new()));
             return false;
         }
         loop {
@@ -552,6 +560,16 @@ fn work<'a, N: Num>(shared: &Shared<'a, N>, worker: usize) {
 /// has something to take and the owner pays the lock once per theft rather than
 /// once per expansion. The item handed over is the **oldest** the worker holds,
 /// which in a depth-first search is the largest subtree left to do.
+/// Keeps `set` an antichain: `v` enters unless some member is below it, and
+/// the members above it leave.
+fn insert_minimal<N: Num>(set: &mut Vec<Vec<N>>, v: Vec<N>) {
+    if set.iter().any(|u| N::leq(u, &v, 0.0)) {
+        return;
+    }
+    set.retain(|w| !N::leq(&v, w, 0.0));
+    set.push(v);
+}
+
 fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, rng: &mut Rng) {
     let store = &shared.store;
     let cfg = &shared.cfg;
@@ -563,20 +581,27 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
     let mut peak_here: u64 = 0;
     // The counters are local and are published on the way out: an atomic add per
     // expansion, shared by every worker, is a cache line every core fights over.
-    let publish = |shared: &Shared<'a, N>, e: u64, p: u64| {
+    let mut cert: Vec<Vec<N>> = Vec::new();
+    let publish = |shared: &Shared<'a, N>, e: u64, p: u64, cert: &mut Vec<Vec<N>>| {
         shared.expanded.fetch_add(e, Ordering::Relaxed);
         shared.peak_open.fetch_max(p, Ordering::Relaxed);
+        if !cert.is_empty() {
+            let mut all = shared.certificate.lock().unwrap();
+            for v in cert.drain(..) {
+                insert_minimal(&mut all, v);
+            }
+        }
     };
     loop {
         if shared.stop.load(Ordering::Relaxed) {
-            publish(shared, expanded_here, peak_here);
+            publish(shared, expanded_here, peak_here, &mut cert);
             return;
         }
         expanded_here += 1;
         if expanded_here % 4096 == 0 {
             if let Some(d) = shared.deadline {
                 if Instant::now() >= d {
-                    publish(shared, expanded_here, peak_here);
+                    publish(shared, expanded_here, peak_here, &mut cert);
                     shared.finish(Answer::Timeout);
                     return;
                 }
@@ -592,7 +617,7 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
         if cfg.ablation.accept_early() || closed {
             node.frontier.accepting(&mut scratch);
             if leq(&scratch, &cfg.threshold, cfg.epsilon) {
-                publish(shared, expanded_here, peak_here);
+                publish(shared, expanded_here, peak_here, &mut cert);
                 shared.finish(Answer::Yes(Strategy {
                     decisions: resolve(&node.sigma),
                     frontier_size: open_now as usize,
@@ -612,13 +637,19 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
         }
         {
             if !leq(&scratch, &cfg.threshold, cfg.epsilon) {
+                // The leaf certifies that every strategy through it pays at
+                // least the sum in hand, the rejecting one or the accumulated
+                // one, both below every completion.
+                if cfg.certificate {
+                    insert_minimal(&mut cert, scratch.clone());
+                }
                 match local.pop_back() {
                     Some(next) => {
                         node = next;
                         continue;
                     }
                     None => {
-                        publish(shared, expanded_here, peak_here);
+                        publish(shared, expanded_here, peak_here, &mut cert);
                         return;
                     }
                 }
@@ -633,7 +664,7 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
                     continue;
                 }
                 None => {
-                    publish(shared, expanded_here, peak_here);
+                    publish(shared, expanded_here, peak_here, &mut cert);
                     return;
                 }
             }
@@ -644,7 +675,7 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
         let low = match store.children(elected, Branch::Low) {
             Ok(v) => v,
             Err(e) => {
-                publish(shared, expanded_here, peak_here);
+                publish(shared, expanded_here, peak_here, &mut cert);
                 shared.finish(Answer::Failed(format!("{e:?}")));
                 return;
             }
@@ -652,7 +683,7 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
         let high = match store.children(elected, Branch::High) {
             Ok(v) => v,
             Err(e) => {
-                publish(shared, expanded_here, peak_here);
+                publish(shared, expanded_here, peak_here, &mut cert);
                 shared.finish(Answer::Failed(format!("{e:?}")));
                 return;
             }
@@ -728,6 +759,7 @@ fn search_in<'a, N: Num>(tree: &'a Tree, records: &'a Records<'a, N>, cfg: Confi
         stacks: (0..workers).map(|_| Stack::new()).collect(),
         stop: AtomicBool::new(false),
         result: Mutex::new(None),
+        certificate: Mutex::new(Vec::new()),
         idle: Mutex::new(0),
         wake: Condvar::new(),
         sleepers: AtomicUsize::new(0),
@@ -747,12 +779,12 @@ fn search_in<'a, N: Num>(tree: &'a Tree, records: &'a Records<'a, N>, cfg: Confi
         }
     });
 
-    let answer = shared
-        .result
-        .lock()
-        .unwrap()
-        .take()
-        .unwrap_or(Answer::No);
+    let answer = match shared.result.lock().unwrap().take() {
+        Some(Answer::No(_)) | None => {
+            Answer::No(std::mem::take(&mut *shared.certificate.lock().unwrap()))
+        }
+        Some(a) => a,
+    };
     let stats = Stats {
         expanded: shared.expanded.load(Ordering::Relaxed),
         choice_states: shared.store.cs_made.load(Ordering::Relaxed),
