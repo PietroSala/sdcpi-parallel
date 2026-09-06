@@ -360,6 +360,8 @@ pub struct Witness {
 #[derive(Clone, Debug)]
 pub struct Point {
     pub value: Vec<BigRational>,
+    /// The ticks of the value, the grid point it rounds to on the loose side.
+    pub ticks: Vec<BigUint>,
     pub origin: Origin,
     pub witness: Option<Witness>,
 }
@@ -488,6 +490,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     let zero: Vec<BigUint> = (0..k).map(|_| BigUint::zero()).collect();
     let mut apexes: Vec<Point> = vec![Point {
         value: upper.clone(),
+        ticks: zero.clone(),
         origin: Origin::Upper,
         witness: None,
     }];
@@ -499,6 +502,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         v[i] = lower[i].clone();
         apexes.push(Point {
             value: v,
+            ticks: ta.clone(),
             origin: Origin::Axis(i),
             witness: None,
         });
@@ -539,6 +543,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                 unknown = o.and(&unknown, &o.not(&cone));
                 apexes.push(Point {
                     value,
+                    ticks: ta,
                     origin: Origin::Query(queries),
                     witness: Some(Witness {
                         decisions: strategy.decisions,
@@ -568,26 +573,32 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     }
     drop(sol);
 
-    // The minimal apexes. Among equal values the one with a witness wins, then
-    // the earlier one.
+    // The minimal apexes, compared on the grid: an apex is redundant when
+    // another one is at least as tight in every component kept, its cone
+    // lying inside the other. At the exact tick this is the comparison of the
+    // values; at a coarser one two values rounding to the same grid point
+    // count as one, the earlier witness winning. A point known feasible
+    // without a query gets its witness now, if it is on the frontier at all,
+    // and the accepting sum of that run, at most the point and equal to it on
+    // the components of the frontier, replaces it; the filter runs once more
+    // after that, a replaced value being able to retire others.
     let key = |p: &Point, i: usize| (p.witness.is_none(), i);
-    let proj = |p: &Point| -> Vec<BigRational> {
-        components.iter().map(|&c| p.value[c].clone()).collect()
-    };
-    let mut minimal: Vec<Point> = Vec::new();
-    for (i, a) in apexes.iter().enumerate() {
-        let pa = proj(a);
-        let dominated = apexes.iter().enumerate().any(|(j, b)| {
-            let pb = proj(b);
-            j != i && leq_vec(&pb, &pa) && (pb != pa || key(b, j) < key(a, i))
-        });
-        if !dominated {
-            minimal.push(a.clone());
+    let minimal_apexes = |apexes: &[Point]| -> Vec<Point> {
+        let mut out = Vec::new();
+        for (i, a) in apexes.iter().enumerate() {
+            let dominated = apexes.iter().enumerate().any(|(j, b)| {
+                j != i
+                    && components.iter().all(|&c| b.ticks[c] >= a.ticks[c])
+                    && (components.iter().any(|&c| b.ticks[c] != a.ticks[c])
+                        || key(b, j) < key(a, i))
+            });
+            if !dominated {
+                out.push(a.clone());
+            }
         }
-    }
-
-    // A point known feasible without a query gets its witness now, if it is
-    // on the frontier at all; it seldom is.
+        out
+    };
+    let mut minimal = minimal_apexes(&apexes);
     let mut witness_queries = 0usize;
     if matches!(status, Status::Complete) {
         for p in minimal.iter_mut() {
@@ -603,11 +614,8 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
             accumulate(&mut total, &st);
             witness_queries += 1;
             if let Answer::Yes(strategy) = answer {
-                // The accepting sum is at most the point and, the point being
-                // minimal, equal to it on the components of the frontier; on
-                // the others it is the value the witness pays, which is the
-                // one worth reporting.
                 p.value = strategy.accepting.iter().map(|e| e.0.clone()).collect();
+                p.ticks = (0..k).map(|i| grid.tick_floor(i, &p.value[i])).collect();
                 p.witness = Some(Witness {
                     decisions: strategy.decisions,
                     histories: strategy.histories,
@@ -615,7 +623,11 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                 });
             }
         }
+        minimal = minimal_apexes(&minimal);
     }
+    let proj = |p: &Point| -> Vec<BigRational> {
+        components.iter().map(|&c| p.value[c].clone()).collect()
+    };
     minimal.sort_by(|a, b| proj(a).cmp(&proj(b)));
 
     Ok(Report {
