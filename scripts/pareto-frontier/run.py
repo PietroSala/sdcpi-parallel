@@ -7,12 +7,13 @@
 
 Every instance of the grid of the journal paper is regenerated from the
 stable seed of stage 1 of storm-comparison-ablation, nothing is copied,
-and asked for the frontier of all its expected impacts nine times: once by
-Storm on one core, and eight times by sdcpi pareto, at one, two, four and
-eight workers with both tests, then the three ablations at one worker,
-then the second library at one worker. The order of the campaign is by
-diagonal, nesting plus independence, then process, then number of
-impacts, then the six modes, then the nine configurations, so that a cut
+and asked for the frontier of all its expected impacts thirty-three
+times: once by Storm on one core, and thirty-two times by sdcpi pareto,
+every library behind the diagrams, biodivine and OxiDD, crossed with
+every ablation of the search, both tests, accept only, reject only and
+none, and with one, two, four and eight workers. The order of the
+campaign is by diagonal, nesting plus independence, then process, then
+number of impacts, then the six modes, then the configurations, so that a cut
 at any moment leaves a record usable from the smallest instances up.
 Every run is recorded as it completes, one JSON per instance and
 configuration, and a run whose record exists is never repeated: the
@@ -45,14 +46,20 @@ import setup as old_setup  # noqa: E402  the pinned benchmark
 MODES = gen.MODES
 SEED = 20260815
 WORKERS = [1, 2, 4, 8]
+ABLATIONS = ["both", "accept", "reject", "none"]
+LIBRARIES = ["biodivine", "oxidd"]
 
-# The nine configurations of one instance, in the order they run.
-CONFS: list[tuple[str, list[str]]] = (
-    [("storm", [])]
-    + [(f"w{w}", ["--workers", str(w)]) for w in WORKERS]
-    + [(a, ["--workers", "1", "--ablation", a]) for a in ("accept", "reject", "none")]
-    + [("oxidd", ["--workers", "1", "--obdd-library", "oxidd"])]
-)
+# The thirty-three configurations of one instance, in the order they run:
+# Storm, then every library, every ablation and every number of workers,
+# named `<library>-<ablation>-w<workers>`.
+CONFS: list[tuple[str, list[str]]] = [("storm", [])] + [
+    (f"{lib}-{abl}-w{w}",
+     ["--workers", str(w), "--ablation", abl, "--obdd-library", lib])
+    for lib in LIBRARIES
+    for abl in ABLATIONS
+    for w in WORKERS
+]
+BASELINE = "biodivine-both-w1"
 
 
 # The child in flight, so that a signal to the driver takes the child with
@@ -272,7 +279,7 @@ def main() -> int:
     p.add_argument("--modes", nargs="+", default=MODES)
     p.add_argument("--limit", type=int, default=None, help="stop after this many instances")
     p.add_argument("--only", nargs="+", default=None,
-                   help="a subset of the configurations: storm w1 w2 w4 w8 accept reject none oxidd")
+                   help="a subset of the configurations, storm or <library>-<ablation>-w<workers>")
     a = p.parse_args()
 
     if not SDCPI.exists():

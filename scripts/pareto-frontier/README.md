@@ -23,15 +23,19 @@ from two to ten, the modes are the six of the benchmark.
 
 ## The runs
 
-One instance is asked for the frontier of all its expected impacts nine
-times, in this order:
+One instance is asked for the frontier of all its expected impacts
+thirty-three times, in this order:
 
 | Configuration | Command |
 |---|---|
 | `storm` | `storm --prism <model> --prop <multi> --purescheds --exact`, one core |
-| `w1` `w2` `w4` `w8` | `sdcpi pareto --workers N`, both tests, biodivine |
-| `accept` `reject` `none` | `sdcpi pareto --workers 1 --ablation A`, biodivine |
-| `oxidd` | `sdcpi pareto --workers 1 --obdd-library oxidd`, both tests |
+| `<library>-<ablation>-w<workers>` | `sdcpi pareto --obdd-library L --ablation A --workers N` |
+
+with the library `biodivine` or `oxidd`, the ablation `both`, `accept`,
+`reject` or `none`, and one, two, four or eight workers: every library
+crossed with every ablation and every number of workers, thirty-two runs
+of ours. The baseline every other run is compared with is
+`biodivine-both-w1`, the one compared with Storm at equal resources.
 
 The model and the property of Storm come from `sdcpi to_prism` and
 `sdcpi to_objective --pareto true`. Every run of ours is at the exact tick

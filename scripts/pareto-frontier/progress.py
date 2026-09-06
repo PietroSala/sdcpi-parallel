@@ -7,7 +7,8 @@ Two tables. By diagonal: the instances of the grid, how many have every
 run recorded, and the runs done over the runs owed. By configuration: the
 runs complete, timed out, killed and failed, the median and the worst
 seconds of the complete ones, and the agreement of the frontier with
-the one-worker run of ours, point sets compared as exact rationals; for
+the baseline run of ours, biodivine, both tests, one worker, point sets
+compared as exact rationals; for
 Storm the agreement counts its default precision, so a smaller set is a
 dropped point and not an error.
 """
@@ -24,7 +25,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from run import CONFS, MODES  # noqa: E402
+from run import BASELINE, CONFS, MODES  # noqa: E402
 
 CONF_NAMES = [c for c, _ in CONFS]
 
@@ -79,17 +80,17 @@ def main() -> int:
         d["runs"] += len(recs)
         if len(recs) == len(CONF_NAMES):
             d["done"] += 1
-        ours = points_of(recs["w1"]) if "w1" in recs else None
+        ours = points_of(recs[BASELINE]) if BASELINE in recs else None
         for c, r in recs.items():
             s = by_conf[c]
             st = r.get("status", "failed")
             s[st if st in s else "failed"] += 1
             if st == "complete":
                 s["secs"].append(r.get("seconds", 0.0))
-                if c != "w1" and ours is not None:
+                if c != BASELINE and ours is not None:
                     if c == "storm":
                         pts = points_of(r)
-                        ours_here = points_of(recs["w1"], r.get("objectives"))
+                        ours_here = points_of(recs[BASELINE], r.get("objectives"))
                     else:
                         pts, ours_here = points_of(r), ours
                     s["compared"] += 1
@@ -101,7 +102,8 @@ def main() -> int:
     total_runs = sum(d["runs"] for d in by_diag.values())
     total_done = sum(d["done"] for d in by_diag.values())
     log = a.experiment / "campaign.log"
-    started = log.stat().st_ctime if log.exists() else time.time()
+    st = log.stat() if log.exists() else None
+    started = getattr(st, "st_birthtime", st.st_mtime) if st else time.time()
     hours = (time.time() - started) / 3600
     print(f"round {a.round}: {total_done} instances complete, {total_runs} runs recorded, "
           f"{hours:.1f} h since the log began, last record {latest[1]}")
@@ -112,16 +114,16 @@ def main() -> int:
         owed = d["inst"] * len(CONF_NAMES)
         print(f"{diag:>8} {grid_size(diag):>6} {d['inst']:>8} {d['done']:>9} {d['runs']:>5}/{owed:<6}")
     print()
-    print(f"{'conf':>8} {'complete':>9} {'timeout':>8} {'killed':>7} {'failed':>7} "
-          f"{'median s':>9} {'worst s':>9} {'agree w1':>10}")
+    print(f"{'conf':>22} {'complete':>9} {'timeout':>8} {'killed':>7} {'failed':>7} "
+          f"{'median s':>9} {'worst s':>9} {'agree':>10}")
     for c in CONF_NAMES:
         s = by_conf[c]
         med = statistics.median(s["secs"]) if s["secs"] else 0.0
         worst = max(s["secs"]) if s["secs"] else 0.0
-        agree = "" if c == "w1" else f"{s['agree']}/{s['compared']}"
+        agree = "" if c == BASELINE else f"{s['agree']}/{s['compared']}"
         if c == "storm" and s["storm_smaller"]:
             agree += f" ({s['storm_smaller']} fewer)"
-        print(f"{c:>8} {s['complete']:>9} {s['timeout']:>8} {s['killed']:>7} {s['failed']:>7} "
+        print(f"{c:>22} {s['complete']:>9} {s['timeout']:>8} {s['killed']:>7} {s['failed']:>7} "
               f"{med:>9.3f} {worst:>9.3f} {agree:>10}")
     return 0
 
