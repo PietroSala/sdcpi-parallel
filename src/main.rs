@@ -132,9 +132,15 @@ options for determine
 
 options for pareto
   the frontier of the achievable expected impacts, one strategy per point.
-  The box [L, U] is discretised into ticks and explored with two OBDDs, the
-  loosest unknown point going to determine at every step; the search runs on
-  exact rationals. Every option of determine but --B is forwarded.
+  The box [L, U] is discretised into ticks and explored with two OBDDs, an
+  unknown point going to determine at every step; the search runs on exact
+  rationals. Every option of determine but --B is forwarded.
+  --extract MODE        random | draw | loosest           (default random)
+                        random draws an unknown point by a walk on the
+                        diagram, seeded by --seed, and loosens it to a
+                        maximal unknown point; draw keeps the drawn point
+                        as it is; loosest takes the lexicographically
+                        smallest tick vector
   --precision E         the tick of the grid; without it the tick is 1/D
                         with D a common denominator of every achievable
                         expected value, and the frontier is exact
@@ -816,6 +822,11 @@ fn cmd_pareto(args: &[String]) -> i32 {
             Some(out)
         }
     };
+    let extract = match args.flag("extract").map(pareto::Extract::parse) {
+        None => pareto::Extract::Random,
+        Some(Some(e)) => e,
+        Some(None) => return fail("--extract wants random, draw or loosest"),
+    };
     let time_limit = match args.flag("time-limit") {
         None => None,
         Some(t) => match t.parse::<f64>() {
@@ -828,6 +839,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
     let report = match pareto::frontier(
         &tree,
         pareto::Options {
+            extract,
             time_limit,
             precision,
             components,
@@ -850,6 +862,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
     };
     println!("instance       {}", tree.meta.key);
     println!("library        {}", report.library);
+    println!("extract        {}", report.extract.name());
     match &report.denominator {
         Some(d) => {
             println!("tick           1/D exact");
@@ -957,6 +970,7 @@ fn json_report(tree: &Tree, r: &pareto::Report, elapsed: Duration, decisions: bo
     o.push_str("{\n");
     o.push_str(&format!("  \"instance\": {},\n", esc(&tree.meta.key)));
     o.push_str(&format!("  \"library\": {},\n", esc(r.library)));
+    o.push_str(&format!("  \"extract\": {},\n", esc(r.extract.name())));
     o.push_str(&format!("  \"tick\": {},\n", esc(&r.epsilon.to_string())));
     o.push_str(&format!(
         "  \"denominator\": {},\n",

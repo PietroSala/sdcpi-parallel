@@ -5,8 +5,9 @@
 //! infeasibility is closed downward. The box is discretised into ticks, one
 //! tick per component counting tightness from `u_i` down, and two OBDDs over
 //! the bits of the ticks hold the grid points whose status is unknown and the
-//! ones known feasible. The loop extracts the loosest unknown point, the
-//! lexicographically smallest tick vector, and puts it to `determine`. An
+//! ones known feasible. The loop draws an unknown point at random, by a walk
+//! on the diagram, and puts it to `determine`; the loosest unknown point, the
+//! lexicographically smallest tick vector, is the alternative. An
 //! accept comes with the accepting sum of the winning frontier, which every
 //! completion of the partial strategy pays at most: the cone above it is
 //! feasible, the sum is recorded as an apex with the strategy as its witness.
@@ -243,6 +244,110 @@ impl Grid {
         f
     }
 
+    /// A point of `phi` drawn at random: the walk from the root of the
+    /// diagram to the terminal one, taking either child with the same
+    /// probability wherever both lead somewhere, the bits of the variables
+    /// the walk skips drawn at random. Written variable by variable so as to
+    /// need nothing of the library beyond the connectives: at a variable
+    /// where both values keep `phi` satisfiable under the prefix the value is
+    /// drawn, which is the choice at a node of the diagram when the variable
+    /// is there and the draw of a skipped bit when it is not.
+    fn random_point<O: Obdd>(&self, o: &O, phi: &O::F, rng: &mut Rng) -> Vec<BigUint> {
+        let mut cur = phi.clone();
+        let mut out = Vec::with_capacity(self.comps.len());
+        for vars in &self.comps {
+            let mut t = BigUint::zero();
+            for &v in vars {
+                let x = o.var(v);
+                let zero = o.and(&cur, &o.not(&x));
+                t <<= 1usize;
+                let take_one = if !o.is_sat(&zero) {
+                    true
+                } else {
+                    let one = o.and(&cur, &x);
+                    o.is_sat(&one) && rng.coin()
+                };
+                if take_one {
+                    cur = o.and(&cur, &x);
+                    t += 1u32;
+                } else {
+                    cur = zero;
+                }
+            }
+            out.push(t);
+        }
+        out
+    }
+
+    /// The cube of the ticks of every component but `skip`: `phi` and this
+    /// cube is `phi` at those ticks, a function of the bits of `skip` alone.
+    fn fix_others<O: Obdd>(&self, o: &O, phi: &O::F, t: &[BigUint], skip: usize) -> O::F {
+        let mut cur = phi.clone();
+        for (c, vars) in self.comps.iter().enumerate() {
+            if c == skip {
+                continue;
+            }
+            let b = vars.len() as u64;
+            for j in 0..b {
+                let x = o.var(vars[(b - 1 - j) as usize]);
+                cur = if t[c].bit(j) { o.and(&cur, &x) } else { o.and(&cur, &o.not(&x)) };
+            }
+        }
+        cur
+    }
+
+    /// The smallest tick of component `i` in the function `f` of its bits
+    /// alone, the walk of `lexmin` on one component.
+    fn least_tick<O: Obdd>(&self, o: &O, f: &O::F, i: usize) -> BigUint {
+        let mut cur = f.clone();
+        let mut t = BigUint::zero();
+        for &v in &self.comps[i] {
+            let x = o.var(v);
+            let zero = o.and(&cur, &o.not(&x));
+            t <<= 1usize;
+            if o.is_sat(&zero) {
+                cur = zero;
+            } else {
+                cur = o.and(&cur, &x);
+                t += 1u32;
+            }
+        }
+        t
+    }
+
+    /// A maximal unknown point above `t`: the components are loosened one at
+    /// a time, each to the least tick that keeps the point in `phi` with the
+    /// others fixed, in a random order, until no component moves. The result
+    /// is above `t` in every component and no point of `phi` is looser than
+    /// it in every component, so a refusal there retires a corner and not a
+    /// speck.
+    fn loosen<O: Obdd>(&self, o: &O, phi: &O::F, mut t: Vec<BigUint>, rng: &mut Rng) -> Vec<BigUint> {
+        let k = self.comps.len();
+        let mut order: Vec<usize> = (0..k).collect();
+        loop {
+            // a random order of the components, by a Fisher-Yates shuffle
+            for a in (1..k).rev() {
+                let b = (rng.next() % (a as u64 + 1)) as usize;
+                order.swap(a, b);
+            }
+            let mut moved = false;
+            for &i in &order {
+                if self.comps[i].is_empty() {
+                    continue;
+                }
+                let f = self.fix_others(o, phi, &t, i);
+                let least = self.least_tick(o, &f, i);
+                if least < t[i] {
+                    t[i] = least;
+                    moved = true;
+                }
+            }
+            if !moved {
+                return t;
+            }
+        }
+    }
+
     /// The lexicographically smallest tick vector in `phi`, one top-down walk
     /// through the variables in order: the bit is taken false whenever some
     /// point of `phi` agrees with the prefix so far and that bit.
@@ -265,6 +370,26 @@ impl Grid {
             out.push(t);
         }
         out
+    }
+}
+
+/// A small generator for the draws of the extraction, splitmix64, seeded from
+/// the seed of the search so that a run is reproducible.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Rng {
+        Rng(seed ^ 0x9E37_79B9_7F4A_7C15)
+    }
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    fn coin(&mut self) -> bool {
+        self.next() & 1 == 1
     }
 }
 
@@ -311,6 +436,37 @@ fn leq_vec(a: &[BigRational], b: &[BigRational]) -> bool {
 // the command
 // ---------------------------------------------------------------------------
 
+/// How the next unknown point is chosen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Extract {
+    /// A point drawn at random by a walk on the diagram of the unknown
+    /// points, then loosened to a maximal unknown point above it: a point
+    /// no other unknown point is looser than in every component.
+    Random,
+    /// The point drawn by the walk itself, not loosened.
+    Draw,
+    /// The loosest one, the lexicographically smallest tick vector.
+    Loosest,
+}
+
+impl Extract {
+    pub fn parse(text: &str) -> Option<Extract> {
+        match text {
+            "random" => Some(Extract::Random),
+            "draw" => Some(Extract::Draw),
+            "loosest" => Some(Extract::Loosest),
+            _ => None,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Extract::Random => "random",
+            Extract::Draw => "draw",
+            Extract::Loosest => "loosest",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Library {
     Biodivine,
@@ -328,6 +484,7 @@ impl Library {
 }
 
 pub struct Options {
+    pub extract: Extract,
     /// A budget of wall-clock time for the whole exploration; past it the
     /// loop stops and the frontier is reported as partial.
     pub time_limit: Option<Duration>,
@@ -378,6 +535,7 @@ pub enum Status {
 
 pub struct Report {
     pub library: &'static str,
+    pub extract: Extract,
     pub epsilon: BigRational,
     pub denominator: Option<BigInt>,
     pub upper: Vec<BigRational>,
@@ -529,6 +687,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     let mut unknown = o.and(&boxf, &o.not(&sol));
     max_size = max_size.max(o.size(&unknown));
     obdd_time += t0.elapsed();
+    let mut rng = Rng::new(opts.search.seed);
 
     loop {
         let t0 = Instant::now();
@@ -536,7 +695,14 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
             obdd_time += t0.elapsed();
             break;
         }
-        let tx = grid.lexmin(&o, &unknown);
+        let tx = match opts.extract {
+            Extract::Random => {
+                let drawn = grid.random_point(&o, &unknown, &mut rng);
+                grid.loosen(&o, &unknown, drawn, &mut rng)
+            }
+            Extract::Draw => grid.random_point(&o, &unknown, &mut rng),
+            Extract::Loosest => grid.lexmin(&o, &unknown),
+        };
         obdd_time += t0.elapsed();
 
         // A query never runs past the time left on the whole exploration.
@@ -662,6 +828,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
 
     Ok(Report {
         library: o.name(),
+        extract: opts.extract,
         epsilon: eps,
         denominator,
         upper,
@@ -721,6 +888,30 @@ mod tests {
             assert_eq!(ge_count, expect_ge, "ge {a}");
             assert_eq!(le_count, expect_le, "le {a}");
         }
+    }
+
+    #[test]
+    fn random_points_lie_in_phi() {
+        let o = Biodivine::with_vars(6).unwrap();
+        let grid = Grid {
+            eps: BigRational::one(),
+            upper: vec![BigRational::from_integer(7.into()); 2],
+            lower: vec![BigRational::zero(); 2],
+            ticks: vec![BigUint::from(7u32); 2],
+            comps: vec![vec![0, 1, 2], vec![3, 4, 5]],
+        };
+        let a = grid.cone_below(&o, &[BigUint::from(3u32), BigUint::from(5u32)]);
+        let b = grid.cone_below(&o, &[BigUint::from(3u32), BigUint::from(6u32)]);
+        let phi = o.and(&a, &o.not(&b));
+        let mut rng = Rng::new(7);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let t = grid.random_point(&o, &phi, &mut rng);
+            assert!(t[0] >= BigUint::from(3u32) && t[0] <= BigUint::from(7u32));
+            assert_eq!(t[1], BigUint::from(5u32));
+            seen.insert(t[0].clone());
+        }
+        assert_eq!(seen.len(), 5, "every point of phi is drawn");
     }
 
     #[test]
