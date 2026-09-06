@@ -257,6 +257,11 @@ class Campaign:
 
     def run_storm(self, key: str, yaml: Path) -> dict:
         prism, prop, objectives = self.model(key, yaml)
+        if not objectives:
+            # Every impact is zero on every task: the frontier is the one point
+            # of zeros, and there is nothing to ask.
+            return {"tool": "storm", "status": "complete", "seconds": 0.0, "objectives": [],
+                    "points": [[]], "points_found": 1, "note": "no objective, every impact zero"}
         cmd = ["storm", "--prism", str(prism), "--prop", prop, "--purescheds", "--exact"]
         started = time.monotonic()
         code, out, err, killed = call(cmd, self.timeout)
@@ -267,6 +272,11 @@ class Campaign:
         text = out + err
         points = [[x.strip() for x in m.group(1).split(",")]
                   for m in re.finditer(r"\(([^()]*)\)\s*approx\.", text)]
+        if len(objectives) == 1 and not points:
+            # One objective left: Storm answers a single value and no list.
+            single = re.search(r"Result \(for initial states\): (\S+)", text)
+            if single:
+                points = [[single.group(1)]]
         checking = re.search(r"Time for model checking: ([0-9.]+)s", text)
         states = re.search(r"States:\s*(\d+)", text)
         found = re.search(r"(\d+) Pareto optimal points found", text)
