@@ -27,6 +27,7 @@ import json
 import os
 import platform
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -52,6 +53,37 @@ CONFS: list[tuple[str, list[str]]] = (
     + [(a, ["--workers", "1", "--ablation", a]) for a in ("accept", "reject", "none")]
     + [("oxidd", ["--workers", "1", "--obdd-library", "oxidd"])]
 )
+
+
+# The child in flight, so that a signal to the driver takes the child with
+# it: a Storm left orphaned has no timeout of its own.
+_child: subprocess.Popen | None = None
+
+
+def _die(signum, frame):  # noqa: ARG001
+    if _child is not None and _child.poll() is None:
+        _child.kill()
+    sys.exit(128 + signum)
+
+
+signal.signal(signal.SIGTERM, _die)
+signal.signal(signal.SIGINT, _die)
+
+
+def call(cmd: list[str], timeout: float) -> tuple[int | None, str, str, bool]:
+    """Runs `cmd` with the timeout, killing it past that: the exit code, the
+    two streams, and whether it was killed."""
+    global _child
+    _child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        out, err = _child.communicate(timeout=timeout)
+        return _child.returncode, out, err, False
+    except subprocess.TimeoutExpired:
+        _child.kill()
+        out, err = _child.communicate()
+        return None, out or "", err or "", True
+    finally:
+        _child = None
 
 
 def key_of(n: int, i: int, k: int, d: int, m: str) -> str:
@@ -154,26 +186,24 @@ class Campaign:
         prism, prop = self.model(key, yaml)
         cmd = ["storm", "--prism", str(prism), "--prop", prop, "--purescheds", "--exact"]
         started = time.monotonic()
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
-        except subprocess.TimeoutExpired as e:
-            return {"tool": "storm", "status": "timeout", "seconds": time.monotonic() - started,
-                    "command": cmd, "stdout_tail": (e.stdout or b"")[-2000:].decode(errors="replace")
-                    if isinstance(e.stdout, bytes) else (e.stdout or "")[-2000:]}
+        code, out, err, killed = call(cmd, self.timeout)
         wall = time.monotonic() - started
-        text = r.stdout + r.stderr
+        if killed:
+            return {"tool": "storm", "status": "timeout", "seconds": wall, "command": cmd,
+                    "stdout_tail": (out + err)[-2000:]}
+        text = out + err
         points = [[x.strip() for x in m.group(1).split(",")]
                   for m in re.finditer(r"\(([^()]*)\)\s*approx\.", text)]
         checking = re.search(r"Time for model checking: ([0-9.]+)s", text)
         states = re.search(r"States:\s*(\d+)", text)
         found = re.search(r"(\d+) Pareto optimal points found", text)
-        status = "complete" if r.returncode == 0 and (found or points) else "failed"
+        status = "complete" if code == 0 and (found or points) else "failed"
         return {
             "tool": "storm", "status": status, "seconds": wall,
             "checking_seconds": float(checking.group(1)) if checking else None,
             "states": int(states.group(1)) if states else None,
             "points": points, "points_found": int(found.group(1)) if found else len(points),
-            "command": cmd, "returncode": r.returncode,
+            "command": cmd, "returncode": code,
             "stdout_tail": text[-2000:] if status != "complete" else "",
         }
 
@@ -183,15 +213,13 @@ class Campaign:
         cmd = [str(SDCPI), "pareto", str(yaml), "--time-limit", str(self.timeout),
                "--json", str(out)] + extra
         started = time.monotonic()
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout + 60)
-        except subprocess.TimeoutExpired:
-            return {"tool": "sdcpi", "status": "killed", "seconds": time.monotonic() - started,
-                    "command": cmd}
+        code, so, se, killed = call(cmd, self.timeout + 60)
         wall = time.monotonic() - started
-        if r.returncode != 0 or not out.exists():
+        if killed:
+            return {"tool": "sdcpi", "status": "killed", "seconds": wall, "command": cmd}
+        if code != 0 or not out.exists():
             return {"tool": "sdcpi", "status": "failed", "seconds": wall, "command": cmd,
-                    "returncode": r.returncode, "stdout_tail": (r.stdout + r.stderr)[-2000:]}
+                    "returncode": code, "stdout_tail": (so + se)[-2000:]}
         record = json.loads(out.read_text())
         out.unlink()
         record.update(tool="sdcpi", wall_seconds=wall, command=cmd)
