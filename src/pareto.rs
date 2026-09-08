@@ -517,6 +517,9 @@ impl Library {
 
 pub struct Options {
     pub extract: Extract,
+    /// Whether every refusal prints the budget it was asked and the vectors
+    /// of its certificate, which is how a certificate is looked at.
+    pub print_certificate: bool,
     /// A budget of wall-clock time for the whole exploration; past it the
     /// loop stops and the frontier is reported as partial.
     pub time_limit: Option<Duration>,
@@ -788,6 +791,26 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
             }
             Answer::No(cert) => {
                 fails += 1;
+                if opts.print_certificate {
+                    let show = |v: &[BigRational]| -> String {
+                        let parts: Vec<String> =
+                            v.iter().map(|r| format!("{:.6}", r.to_f64().unwrap_or(f64::NAN))).collect();
+                        format!("[{}]", parts.join(", "))
+                    };
+                    let asked: Vec<BigRational> = (0..k).map(|i| grid.budget(i, &tx[i])).collect();
+                    println!("  refusal at query {queries}");
+                    println!("    budget asked {}", show(&asked));
+                    println!("    certificate  {} vectors, every strategy pays at least one", cert.len());
+                    for v in &cert {
+                        let vals: Vec<BigRational> = v.iter().map(|e| e.0.clone()).collect();
+                        let over: Vec<String> = (0..k)
+                            .filter(|&i| vals[i] > asked[i])
+                            .map(|i| i.to_string())
+                            .collect();
+                        println!("      {} over budget on {}", show(&vals),
+                                 if over.is_empty() { "no component".to_string() } else { over.join(", ") });
+                    }
+                }
                 let cone = grid.cone_below(&o, &tx);
                 unknown = o.and(&unknown, &o.not(&cone));
                 // Every strategy pays at least one of the vectors of the

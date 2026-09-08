@@ -158,6 +158,8 @@ options for pareto
                         and report the frontier found so far as partial; a
                         query never runs past the time left
   --json F              write the report to F as JSON as well
+  --print-certificate 1 print, at every refusal, the budget asked and the
+                        vectors of its certificate
   --print-strategy 1    print the strategy behind every point, and the
                         decisions in the JSON report
 
@@ -853,6 +855,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
         &tree,
         pareto::Options {
             extract,
+            print_certificate: args.flag("print-certificate").is_some(),
             time_limit,
             precision,
             components,
