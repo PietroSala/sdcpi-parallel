@@ -57,6 +57,17 @@ pub trait Obdd: Sized {
     fn not(&self, a: &Self::F) -> Self::F;
     fn is_sat(&self, a: &Self::F) -> bool;
     fn size(&self, a: &Self::F) -> usize;
+    /// One descent from the root of `a` to the terminal one, the assignment
+    /// it spells out. At a node the descent takes the child `choose` asks
+    /// for when that child leads somewhere and the other child otherwise,
+    /// and a variable the descent skips takes the value `choose` gives it,
+    /// those variables being free. Asking for true everywhere gives the
+    /// lexicographically largest satisfying assignment, asking for false
+    /// everywhere the smallest, and drawing gives a point of `a` drawn along
+    /// the way. The cost is the depth of the diagram, one step per variable,
+    /// against the size of the diagram once per variable that the same walk
+    /// written with conjunctions would cost.
+    fn descend(&self, a: &Self::F, choose: &mut dyn FnMut(usize) -> bool) -> Vec<bool>;
 }
 
 /// `biodivine-lib-bdd`: pure Rust, single threaded, the default.
@@ -102,6 +113,35 @@ impl Obdd for Biodivine {
     }
     fn size(&self, a: &Self::F) -> usize {
         a.size()
+    }
+    fn descend(&self, a: &Self::F, choose: &mut dyn FnMut(usize) -> bool) -> Vec<bool> {
+        let n = self.vars.len();
+        let mut out = vec![false; n];
+        if a.is_false() {
+            return out;
+        }
+        let mut node = a.root_pointer();
+        for i in 0..n {
+            let want = choose(i);
+            if node.is_terminal() || a.var_of(node) != self.vars[i] {
+                // the variable is not on the path, so it is free
+                out[i] = want;
+                continue;
+            }
+            let (first, second) = if want {
+                (a.high_link_of(node), a.low_link_of(node))
+            } else {
+                (a.low_link_of(node), a.high_link_of(node))
+            };
+            if first.is_zero() {
+                out[i] = !want;
+                node = second;
+            } else {
+                out[i] = want;
+                node = first;
+            }
+        }
+        out
     }
 }
 
@@ -161,6 +201,22 @@ impl Obdd for Oxidd {
     fn size(&self, a: &Self::F) -> usize {
         use oxidd::Function;
         a.node_count()
+    }
+    fn descend(&self, a: &Self::F, choose: &mut dyn FnMut(usize) -> bool) -> Vec<bool> {
+        use oxidd::util::OptBool;
+        use oxidd::BooleanFunction;
+        let n = self.vars.len();
+        match a.pick_cube(|_m, _e, level| choose(level as usize)) {
+            None => vec![false; n],
+            Some(cube) => (0..n)
+                .map(|i| match cube.get(i) {
+                    Some(OptBool::True) => true,
+                    Some(OptBool::False) => false,
+                    // a don't care, free to take the value asked for
+                    _ => choose(i),
+                })
+                .collect(),
+        }
     }
 }
 
@@ -256,30 +312,8 @@ impl Grid {
     /// drawn, which is the choice at a node of the diagram when the variable
     /// is there and the draw of a skipped bit when it is not.
     fn random_point<O: Obdd>(&self, o: &O, phi: &O::F, rng: &mut Rng) -> Vec<BigUint> {
-        let mut cur = phi.clone();
-        let mut out = Vec::with_capacity(self.comps.len());
-        for vars in &self.comps {
-            let mut t = BigUint::zero();
-            for &v in vars {
-                let x = o.var(v);
-                let zero = o.and(&cur, &o.not(&x));
-                t <<= 1usize;
-                let take_one = if !o.is_sat(&zero) {
-                    true
-                } else {
-                    let one = o.and(&cur, &x);
-                    o.is_sat(&one) && rng.coin()
-                };
-                if take_one {
-                    cur = o.and(&cur, &x);
-                    t += 1u32;
-                } else {
-                    cur = zero;
-                }
-            }
-            out.push(t);
-        }
-        out
+        let bits = o.descend(phi, &mut |_| rng.coin());
+        self.ticks_of(&bits)
     }
 
     /// The cube of the ticks of every component but `skip`: `phi` and this
@@ -351,51 +385,35 @@ impl Grid {
         }
     }
 
-    /// The lexicographically largest tick vector in `phi`, the walk of
-    /// `lexmin` taking the bit true whenever it can.
-    fn lexmax<O: Obdd>(&self, o: &O, phi: &O::F) -> Vec<BigUint> {
-        let mut cur = phi.clone();
-        let mut out = Vec::with_capacity(self.comps.len());
-        for vars in &self.comps {
-            let mut t = BigUint::zero();
-            for &v in vars {
-                let x = o.var(v);
-                let one = o.and(&cur, &x);
-                t <<= 1usize;
-                if o.is_sat(&one) {
-                    cur = one;
-                    t += 1u32;
-                } else {
-                    cur = o.and(&cur, &o.not(&x));
+    /// The ticks of an assignment over the bits, most significant first.
+    fn ticks_of(&self, bits: &[bool]) -> Vec<BigUint> {
+        self.comps
+            .iter()
+            .map(|vars| {
+                let mut t = BigUint::zero();
+                for &v in vars {
+                    t <<= 1usize;
+                    if bits[v] {
+                        t += 1u32;
+                    }
                 }
-            }
-            out.push(t);
-        }
-        out
+                t
+            })
+            .collect()
     }
 
-    /// The lexicographically smallest tick vector in `phi`, one top-down walk
-    /// through the variables in order: the bit is taken false whenever some
-    /// point of `phi` agrees with the prefix so far and that bit.
+    /// The lexicographically largest tick vector in `phi`, one descent taking
+    /// the bit true whenever it can.
+    fn lexmax<O: Obdd>(&self, o: &O, phi: &O::F) -> Vec<BigUint> {
+        let bits = o.descend(phi, &mut |_| true);
+        self.ticks_of(&bits)
+    }
+
+    /// The lexicographically smallest tick vector in `phi`, one descent
+    /// taking the bit false whenever it can.
     fn lexmin<O: Obdd>(&self, o: &O, phi: &O::F) -> Vec<BigUint> {
-        let mut cur = phi.clone();
-        let mut out = Vec::with_capacity(self.comps.len());
-        for vars in &self.comps {
-            let mut t = BigUint::zero();
-            for &v in vars {
-                let x = o.var(v);
-                let zero = o.and(&cur, &o.not(&x));
-                t <<= 1usize;
-                if o.is_sat(&zero) {
-                    cur = zero;
-                } else {
-                    cur = o.and(&cur, &x);
-                    t += 1u32;
-                }
-            }
-            out.push(t);
-        }
-        out
+        let bits = o.descend(phi, &mut |_| false);
+        self.ticks_of(&bits)
     }
 }
 
