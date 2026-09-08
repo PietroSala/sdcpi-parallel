@@ -499,6 +499,48 @@ impl Extract {
     }
 }
 
+/// Which of the two certificates the loop reads. The one above turns an
+/// accept into the value the winning frontier pays, which is at most the
+/// budget asked and often far below it, and retires the cone above that
+/// value; without it the accept says only yes, and the cone retired is the
+/// one above the budget asked. The one below turns a refusal into the
+/// minimal rejecting sums of the exhausted tree, every strategy paying at
+/// least one of them, and retires everything outside the cones above them;
+/// without it the refusal retires the cone below the budget asked alone.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Certificates {
+    Both,
+    Above,
+    Below,
+    None,
+}
+
+impl Certificates {
+    pub fn parse(text: &str) -> Option<Certificates> {
+        match text {
+            "both" | "true" => Some(Certificates::Both),
+            "above" => Some(Certificates::Above),
+            "below" => Some(Certificates::Below),
+            "none" | "false" => Some(Certificates::None),
+            _ => None,
+        }
+    }
+    pub fn above(self) -> bool {
+        matches!(self, Certificates::Both | Certificates::Above)
+    }
+    pub fn below(self) -> bool {
+        matches!(self, Certificates::Both | Certificates::Below)
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Certificates::Both => "both",
+            Certificates::Above => "above",
+            Certificates::Below => "below",
+            Certificates::None => "none",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Library {
     Biodivine,
@@ -517,6 +559,7 @@ impl Library {
 
 pub struct Options {
     pub extract: Extract,
+    pub certificates: Certificates,
     /// Whether every refusal prints the budget it was asked and the vectors
     /// of its certificate, which is how a certificate is looked at.
     pub print_certificate: bool,
@@ -571,6 +614,7 @@ pub enum Status {
 pub struct Report {
     pub library: &'static str,
     pub extract: Extract,
+    pub certificates: Certificates,
     pub epsilon: BigRational,
     pub denominator: Option<BigInt>,
     pub upper: Vec<BigRational>,
@@ -754,10 +798,11 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                 break;
             }
         };
-        let budget: Vec<Exact> = (0..k).map(|i| Exact(grid.budget(i, &tx[i]))).collect();
+        let asked: Vec<BigRational> = (0..k).map(|i| grid.budget(i, &tx[i])).collect();
         let mut cfg = opts.search.clone();
-        cfg.threshold = budget;
+        cfg.threshold = asked.iter().cloned().map(Exact).collect();
         cfg.record_strategy = true;
+        cfg.certificate = opts.certificates.below();
         cfg.timeout = match (cfg.timeout, left) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -772,8 +817,15 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         match answer {
             Answer::Yes(strategy) => {
                 accepts += 1;
-                let value: Vec<BigRational> =
-                    strategy.accepting.iter().map(|e| e.0.clone()).collect();
+                // With the certificate above, the apex is what the winning
+                // frontier pays, at most the budget asked; without it the
+                // accept says only that the budget asked is met, and the
+                // budget asked is the apex.
+                let value: Vec<BigRational> = if opts.certificates.above() {
+                    strategy.accepting.iter().map(|e| e.0.clone()).collect()
+                } else {
+                    asked.clone()
+                };
                 let ta: Vec<BigUint> = (0..k).map(|i| grid.tick_floor(i, &value[i])).collect();
                 let cone = grid.cone_above(&o, &ta);
                 sol = o.or(&sol, &cone);
@@ -797,7 +849,6 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                             v.iter().map(|r| format!("{:.6}", r.to_f64().unwrap_or(f64::NAN))).collect();
                         format!("[{}]", parts.join(", "))
                     };
-                    let asked: Vec<BigRational> = (0..k).map(|i| grid.budget(i, &tx[i])).collect();
                     println!("  refusal at query {queries}");
                     println!("    budget asked {}", show(&asked));
                     println!("    certificate  {} vectors, every strategy pays at least one", cert.len());
@@ -816,7 +867,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                 // Every strategy pays at least one of the vectors of the
                 // certificate, so a feasible budget lies above one of them:
                 // the unknown points outside every such cone are infeasible.
-                if !cert.is_empty() {
+                if opts.certificates.below() && !cert.is_empty() {
                     certified += 1;
                     cert_vectors += cert.len();
                     let mut allowed = o.fls();
@@ -878,14 +929,17 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
             let mut cfg = opts.search.clone();
             cfg.threshold = p.value.iter().map(|r| Exact(r.clone())).collect();
             cfg.record_strategy = true;
+            cfg.certificate = false;
             let t1 = Instant::now();
             let (answer, st) = search::search::<Exact>(tree, cfg);
             search_time += t1.elapsed();
             accumulate(&mut total, &st);
             witness_queries += 1;
             if let Answer::Yes(strategy) = answer {
-                p.value = strategy.accepting.iter().map(|e| e.0.clone()).collect();
-                p.ticks = (0..k).map(|i| grid.tick_floor(i, &p.value[i])).collect();
+                if opts.certificates.above() {
+                    p.value = strategy.accepting.iter().map(|e| e.0.clone()).collect();
+                    p.ticks = (0..k).map(|i| grid.tick_floor(i, &p.value[i])).collect();
+                }
                 p.witness = Some(Witness {
                     decisions: strategy.decisions,
                     histories: strategy.histories,
@@ -903,6 +957,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     Ok(Report {
         library: o.name(),
         extract: opts.extract,
+        certificates: opts.certificates,
         epsilon: eps,
         denominator,
         upper,

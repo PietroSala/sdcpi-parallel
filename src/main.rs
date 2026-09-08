@@ -143,11 +143,17 @@ options for pareto
                         on the diagram, seeded by --seed, and loosens it to
                         a maximal unknown point; draw keeps the drawn point
                         as it is
-  --certificate B       true, the default, reads the certificate of every
-                        refusal, the minimal rejecting sums of the leaves
-                        of the exhausted tree, and retires every budget
-                        below all of them; false retires the cone below
-                        the refused point alone
+  --certificate MODE    both | above | below | none      (default both)
+                        which of the two certificates the loop reads.
+                        above turns an accept into the value the winning
+                        frontier pays, at most the budget asked, and
+                        retires the cone above that value; without it the
+                        accept says only yes and the budget asked is the
+                        apex. below turns a refusal into the minimal
+                        rejecting sums of the exhausted tree and retires
+                        every budget outside the cones above them; without
+                        it the refusal retires the cone below the budget
+                        asked alone
   --precision E         the tick of the grid; without it the tick is 1/D
                         with D a common denominator of every achievable
                         expected value, and the frontier is exact
@@ -837,10 +843,10 @@ fn cmd_pareto(args: &[String]) -> i32 {
         Some(Some(e)) => e,
         Some(None) => return fail("--extract wants random, draw, loosest or tightest"),
     };
-    let certificate = match args.flag("certificate") {
-        None | Some("true") => true,
-        Some("false") => false,
-        Some(v) => return fail(&format!("--certificate wants true or false, found {v:?}")),
+    let certificates = match args.flag("certificate").map(pareto::Certificates::parse) {
+        None => pareto::Certificates::Both,
+        Some(Some(c)) => c,
+        Some(None) => return fail("--certificate wants both, above, below or none"),
     };
     let time_limit = match args.flag("time-limit") {
         None => None,
@@ -855,13 +861,14 @@ fn cmd_pareto(args: &[String]) -> i32 {
         &tree,
         pareto::Options {
             extract,
+            certificates,
             print_certificate: args.flag("print-certificate").is_some(),
             time_limit,
             precision,
             components,
             library,
             search: Config {
-                certificate,
+                certificate: certificates.below(),
                 ..opts.config::<Exact>(Vec::new(), true)
             },
         },
@@ -882,6 +889,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
     println!("instance       {}", tree.meta.key);
     println!("library        {}", report.library);
     println!("extract        {}", report.extract.name());
+    println!("certificates   {}", report.certificates.name());
     match &report.denominator {
         Some(d) => {
             println!("tick           1/D exact");
@@ -913,7 +921,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
     println!("accepts        {}", report.accepts);
     println!("fails          {}", report.fails);
     println!("witness runs   {}", report.witness_queries);
-    println!("certificates   {} refusals carried {} vectors", report.certified, report.cert_vectors);
+    println!("certified      {} refusals carried {} vectors", report.certified, report.cert_vectors);
     println!("seconds        {:.6}", elapsed.as_secs_f64());
     println!("search seconds {:.6}", report.search_time.as_secs_f64());
     println!("obdd seconds   {:.6}", report.obdd_time.as_secs_f64());
@@ -991,6 +999,7 @@ fn json_report(tree: &Tree, r: &pareto::Report, elapsed: Duration, decisions: bo
     o.push_str(&format!("  \"instance\": {},\n", esc(&tree.meta.key)));
     o.push_str(&format!("  \"library\": {},\n", esc(r.library)));
     o.push_str(&format!("  \"extract\": {},\n", esc(r.extract.name())));
+    o.push_str(&format!("  \"certificates\": {},\n", esc(r.certificates.name())));
     o.push_str(&format!("  \"tick\": {},\n", esc(&r.epsilon.to_string())));
     o.push_str(&format!(
         "  \"denominator\": {},\n",
