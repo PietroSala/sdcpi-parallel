@@ -26,6 +26,7 @@
 //! at least `1/D` apart. The frontier is then exact, with no parameter, and
 //! the search runs on rationals of arbitrary precision.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use num_bigint::{BigInt, BigUint};
@@ -647,6 +648,9 @@ pub struct Report {
     /// The refusals that carried a certificate, and the vectors in them.
     pub certified: usize,
     pub cert_vectors: usize,
+    /// The cones built and the ones found already built.
+    pub cone_built: usize,
+    pub cone_hits: usize,
     pub max_size: usize,
     pub search_time: Duration,
     pub obdd_time: Duration,
@@ -798,6 +802,12 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     max_size = max_size.max(o.size(&unknown));
     obdd_time += t0.elapsed();
     let mut rng = Rng::new(opts.search.seed);
+    // The cones of the certificates repeat: the antichain of one refusal
+    // shares vectors with the antichain of the next, the search having
+    // pruned the same leaves. A cone is kept under its ticks and built once.
+    let mut cones: HashMap<Vec<BigUint>, O::F> = HashMap::new();
+    let mut cone_hits = 0usize;
+    let mut cone_built = 0usize;
 
     loop {
         let t0 = Instant::now();
@@ -906,11 +916,38 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                     certified += 1;
                     cert_vectors += cert.len();
                     let tc = Instant::now();
-                    let mut allowed = o.fls();
+                    let mut layer: Vec<O::F> = Vec::with_capacity(cert.len());
                     for v in &cert {
-                        let tv: Vec<BigUint> = (0..k).map(|i| grid.tick_floor(i, &v[i].0)).collect();
-                        allowed = o.or(&allowed, &grid.cone_above(&o, &tv));
+                        let tv: Vec<BigUint> =
+                            (0..k).map(|i| grid.tick_floor(i, &v[i].0)).collect();
+                        layer.push(match cones.get(&tv) {
+                            Some(c) => {
+                                cone_hits += 1;
+                                c.clone()
+                            }
+                            None => {
+                                cone_built += 1;
+                                let c = grid.cone_above(&o, &tv);
+                                cones.insert(tv, c.clone());
+                                c
+                            }
+                        });
                     }
+                    // The union is taken in a balanced tree: a chain would
+                    // carry a growing diagram through every step.
+                    while layer.len() > 1 {
+                        let mut next = Vec::with_capacity(layer.len().div_ceil(2));
+                        let mut it = layer.chunks(2);
+                        while let Some(pair) = it.next() {
+                            next.push(match pair {
+                                [a, b] => o.or(a, b),
+                                [a] => a.clone(),
+                                _ => unreachable!(),
+                            });
+                        }
+                        layer = next;
+                    }
+                    let allowed = layer.pop().unwrap_or_else(|| o.fls());
                     cone_time += tc.elapsed();
                     let tm = Instant::now();
                     unknown = o.and(&unknown, &allowed);
@@ -1010,6 +1047,8 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         witness_queries,
         certified,
         cert_vectors,
+        cone_built,
+        cone_hits,
         max_size,
         search_time,
         obdd_time,

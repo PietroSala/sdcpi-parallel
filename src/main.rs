@@ -921,7 +921,10 @@ fn cmd_pareto(args: &[String]) -> i32 {
     println!("accepts        {}", report.accepts);
     println!("fails          {}", report.fails);
     println!("witness runs   {}", report.witness_queries);
-    println!("certified      {} refusals carried {} vectors", report.certified, report.cert_vectors);
+    println!(
+        "certified      {} refusals carried {} vectors, {} cones built and {} reused",
+        report.certified, report.cert_vectors, report.cone_built, report.cone_hits
+    );
     println!("seconds        {:.6}", elapsed.as_secs_f64());
     println!("search seconds {:.6}", report.search_time.as_secs_f64());
     println!("obdd seconds   {:.6}", report.obdd_time.as_secs_f64());
