@@ -632,6 +632,11 @@ pub struct Report {
     pub max_size: usize,
     pub search_time: Duration,
     pub obdd_time: Duration,
+    /// The diagram time split three ways: choosing the next point, building
+    /// the cones of an answer, and merging them into the two diagrams.
+    pub extract_time: Duration,
+    pub cone_time: Duration,
+    pub merge_time: Duration,
     pub search: Stats,
     pub status: Status,
     /// The frontier, sorted by the first component.
@@ -731,6 +736,9 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     };
 
     let mut obdd_time = Duration::ZERO;
+    let mut extract_time = Duration::ZERO;
+    let mut cone_time = Duration::ZERO;
+    let mut merge_time = Duration::ZERO;
     let mut search_time = Duration::ZERO;
     let mut total = Stats::default();
     let mut queries = 0usize;
@@ -788,6 +796,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
             Extract::Loosest => grid.lexmin(&o, &unknown),
             Extract::Tightest => grid.lexmax(&o, &unknown),
         };
+        extract_time += t0.elapsed();
         obdd_time += t0.elapsed();
 
         // A query never runs past the time left on the whole exploration.
@@ -827,9 +836,13 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                     asked.clone()
                 };
                 let ta: Vec<BigUint> = (0..k).map(|i| grid.tick_floor(i, &value[i])).collect();
+                let tc = Instant::now();
                 let cone = grid.cone_above(&o, &ta);
+                cone_time += tc.elapsed();
+                let tm = Instant::now();
                 sol = o.or(&sol, &cone);
                 unknown = o.and(&unknown, &o.not(&cone));
+                merge_time += tm.elapsed();
                 apexes.push(Point {
                     value,
                     ticks: ta,
@@ -862,20 +875,28 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                                  if over.is_empty() { "no component".to_string() } else { over.join(", ") });
                     }
                 }
+                let tc = Instant::now();
                 let cone = grid.cone_below(&o, &tx);
+                cone_time += tc.elapsed();
+                let tm = Instant::now();
                 unknown = o.and(&unknown, &o.not(&cone));
+                merge_time += tm.elapsed();
                 // Every strategy pays at least one of the vectors of the
                 // certificate, so a feasible budget lies above one of them:
                 // the unknown points outside every such cone are infeasible.
                 if opts.certificates.below() && !cert.is_empty() {
                     certified += 1;
                     cert_vectors += cert.len();
+                    let tc = Instant::now();
                     let mut allowed = o.fls();
                     for v in &cert {
                         let tv: Vec<BigUint> = (0..k).map(|i| grid.tick_floor(i, &v[i].0)).collect();
                         allowed = o.or(&allowed, &grid.cone_above(&o, &tv));
                     }
+                    cone_time += tc.elapsed();
+                    let tm = Instant::now();
                     unknown = o.and(&unknown, &allowed);
+                    merge_time += tm.elapsed();
                 }
             }
             Answer::Timeout => {
@@ -974,6 +995,9 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         max_size,
         search_time,
         obdd_time,
+        extract_time,
+        cone_time,
+        merge_time,
         search: total,
         status,
         points: minimal,

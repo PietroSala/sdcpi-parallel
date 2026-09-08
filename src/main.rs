@@ -925,6 +925,12 @@ fn cmd_pareto(args: &[String]) -> i32 {
     println!("seconds        {:.6}", elapsed.as_secs_f64());
     println!("search seconds {:.6}", report.search_time.as_secs_f64());
     println!("obdd seconds   {:.6}", report.obdd_time.as_secs_f64());
+    println!(
+        "  extract      {:.6}   cones {:.6}   merge {:.6}",
+        report.extract_time.as_secs_f64(),
+        report.cone_time.as_secs_f64(),
+        report.merge_time.as_secs_f64()
+    );
     println!("obdd peak size {}", report.max_size);
     println!("expanded       {}", report.search.expanded);
     println!("points         {}", report.points.len());
@@ -1033,6 +1039,9 @@ fn json_report(tree: &Tree, r: &pareto::Report, elapsed: Duration, decisions: bo
     o.push_str(&format!("  \"seconds\": {:.6},\n", elapsed.as_secs_f64()));
     o.push_str(&format!("  \"search_seconds\": {:.6},\n", r.search_time.as_secs_f64()));
     o.push_str(&format!("  \"obdd_seconds\": {:.6},\n", r.obdd_time.as_secs_f64()));
+    o.push_str(&format!("  \"extract_seconds\": {:.6},\n", r.extract_time.as_secs_f64()));
+    o.push_str(&format!("  \"cone_seconds\": {:.6},\n", r.cone_time.as_secs_f64()));
+    o.push_str(&format!("  \"merge_seconds\": {:.6},\n", r.merge_time.as_secs_f64()));
     o.push_str(&format!("  \"obdd_peak_size\": {},\n", r.max_size));
     o.push_str(&format!("  \"expanded\": {},\n", r.search.expanded));
     o.push_str(&format!("  \"choice_states\": {},\n", r.search.choice_states));
