@@ -153,12 +153,33 @@ pub struct Oxidd {
     vars: Vec<oxidd::bdd::BDDFunction>,
 }
 
+impl Oxidd {
+    /// An operation that ran out of nodes is tried again after a collection,
+    /// the manager holding a fixed number of them and reclaiming only what
+    /// nothing refers to any more. A second refusal is the end of the run.
+    fn retry(&self, mut op: impl FnMut() -> oxidd::util::AllocResult<oxidd::bdd::BDDFunction>) -> oxidd::bdd::BDDFunction {
+        use oxidd::{Manager, ManagerRef};
+        match op() {
+            Ok(f) => f,
+            Err(_) => {
+                self.manager.with_manager_exclusive(|m| m.gc());
+                op().expect("OxiDD ran out of nodes and a collection did not free enough")
+            }
+        }
+    }
+}
+
 impl Obdd for Oxidd {
     type F = oxidd::bdd::BDDFunction;
 
     fn with_vars(n: usize) -> Result<Oxidd, String> {
         use oxidd::{BooleanFunction, Manager, ManagerRef};
-        let manager = oxidd::bdd::new_manager(1 << 24, 1 << 20, 1);
+        // The index-based manager holds a fixed number of inner nodes and
+        // does not grow, so the capacity is the ceiling of a run: dead nodes
+        // are reclaimed by the collector below, live ones are not. Two to the
+        // twenty-eighth is the largest power of two that leaves room for the
+        // terminals under the limit of two to the thirty-second.
+        let manager = oxidd::bdd::new_manager(1 << 28, 1 << 22, 1);
         let vars = manager
             .with_manager_exclusive(|m| {
                 m.add_vars(n as u32);
@@ -185,15 +206,15 @@ impl Obdd for Oxidd {
     }
     fn and(&self, a: &Self::F, b: &Self::F) -> Self::F {
         use oxidd::BooleanFunction;
-        a.and(b).expect("OxiDD ran out of nodes")
+        self.retry(|| a.and(b))
     }
     fn or(&self, a: &Self::F, b: &Self::F) -> Self::F {
         use oxidd::BooleanFunction;
-        a.or(b).expect("OxiDD ran out of nodes")
+        self.retry(|| a.or(b))
     }
     fn not(&self, a: &Self::F) -> Self::F {
         use oxidd::BooleanFunction;
-        a.not().expect("OxiDD ran out of nodes")
+        self.retry(|| a.not())
     }
     fn is_sat(&self, a: &Self::F) -> bool {
         use oxidd::BooleanFunction;
