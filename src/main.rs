@@ -937,6 +937,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
         );
     }
     println!("extract        {}", report.extract.name());
+    println!("ablation       {}", report.ablation.name());
     println!("certificates   {}", report.certificates.name());
     match &report.denominator {
         Some(d) => {
@@ -1060,6 +1061,7 @@ fn json_report(tree: &Tree, r: &pareto::Report, elapsed: Duration, decisions: bo
     o.push_str(&format!("  \"oracle_reads\": {},\n", r.oracle_reads));
     o.push_str(&format!("  \"oracle_pruned\": {},\n", r.oracle_pruned));
     o.push_str(&format!("  \"extract\": {},\n", esc(r.extract.name())));
+    o.push_str(&format!("  \"ablation\": {},\n", esc(r.ablation.name())));
     o.push_str(&format!("  \"certificates\": {},\n", esc(r.certificates.name())));
     o.push_str(&format!("  \"tick\": {},\n", esc(&r.epsilon.to_string())));
     o.push_str(&format!(

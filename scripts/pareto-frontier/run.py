@@ -63,14 +63,23 @@ ABLATIONS = ["both", "accept", "reject", "none"]
 LIBRARIES = ["biodivine", "oxidd"]
 
 # The configurations of one instance, in the order they run: Storm, then the
-# frontier in one phase at one, two, four and eight workers. The thirty-two
-# configurations of the loop in two phases, `<library>-<ablation>-w<workers>`,
-# ran on the first five diagonals until 2026-09-10 and their records stay
-# where they are, beside the ones written now; they are not run any more.
+# frontier in one phase, the four ablations of the two early tests crossed with
+# the four counts of workers, `onephase-<ablation>-w<workers>`. The ablation
+# with both tests on comes first, so that a cut at any moment leaves the
+# configuration the paper reports. The two tests are independent: with the
+# accept off a budget is recorded only at a closed node, so every apex written
+# is the payment of a whole strategy and none is ever superseded; with the
+# reject off the test that closes a node is made on the impact accumulated for
+# certain so far and not on the lower bound of the node.
+# The thirty-two configurations of the loop in two phases,
+# `<library>-<ablation>-w<workers>`, ran on the first five diagonals until
+# 2026-09-10 and their records stay where they are; they are not run any more.
 CONFS: list[tuple[str, list[str]]] = [("storm", [])] + [
-    (f"onephase-w{w}", ["--onephase", "1", "--workers", str(w)]) for w in WORKERS
+    (f"onephase-{a}-w{w}", ["--onephase", "1", "--ablation", a, "--workers", str(w)])
+    for a in ABLATIONS
+    for w in WORKERS
 ]
-BASELINE = "onephase-w1"
+BASELINE = "onephase-both-w1"
 UNDONE = ("timeout", "killed", "skipped", "truncated")
 # how long past the budget the process is left to run before it is killed,
 # so that the buffer certainly reaches the budget itself

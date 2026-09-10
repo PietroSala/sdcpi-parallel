@@ -39,7 +39,7 @@ use num_traits::{One, ToPrimitive, Zero};
 use crate::anytime::{Progress, Sink};
 use crate::bound::bounds;
 use crate::num::Exact;
-use crate::search::{self, Answer, Config, FrontierOracle, Stats, Strategy};
+use crate::search::{self, Ablation, Answer, Config, FrontierOracle, Stats, Strategy};
 use crate::state::Engine;
 use crate::tree::{Kind, Tree};
 
@@ -733,6 +733,9 @@ pub struct Report {
     pub oracle_pruned: usize,
     pub extract: Extract,
     pub certificates: Certificates,
+    /// Which of the two early tests the search made, the record being unable
+    /// to say so otherwise.
+    pub ablation: Ablation,
     pub epsilon: BigRational,
     pub denominator: Option<BigInt>,
     pub upper: Vec<BigRational>,
@@ -1138,6 +1141,7 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         oracle_pruned: pruned,
         extract: opts.extract,
         certificates: opts.certificates,
+        ablation: opts.search.ablation,
         epsilon: set.eps,
         denominator: set.denominator,
         upper: set.upper,
@@ -1515,6 +1519,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         oracle_pruned: 0,
         extract: opts.extract,
         certificates: opts.certificates,
+        ablation: opts.search.ablation,
         epsilon: eps,
         denominator,
         upper,

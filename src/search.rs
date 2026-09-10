@@ -44,6 +44,14 @@ impl Ablation {
     fn reject_early(self) -> bool {
         matches!(self, Ablation::Both | Ablation::RejectOnly)
     }
+    pub fn name(self) -> &'static str {
+        match self {
+            Ablation::Both => "both",
+            Ablation::AcceptOnly => "accept",
+            Ablation::RejectOnly => "reject",
+            Ablation::Neither => "none",
+        }
+    }
     pub fn parse(s: &str) -> Option<Ablation> {
         match s {
             "both" => Some(Ablation::Both),
