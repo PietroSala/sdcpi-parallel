@@ -7,6 +7,7 @@
 //!
 //! An instance is a path to a YAML file.
 
+mod anytime;
 mod arena;
 mod parse;
 mod bound;
@@ -28,6 +29,7 @@ use tables::Store;
 use tree::Tree;
 
 fn main() {
+    anytime::mark_origin();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         eprintln!("{}", USAGE);
@@ -164,6 +166,13 @@ options for pareto
                         and report the frontier found so far as partial; a
                         query never runs past the time left
   --json F              write the report to F as JSON as well
+  --anytime F           with --onephase, append every apex to F as it is
+                        recorded, one JSON object per line, with the second it
+                        was recorded at counted from the start of the process,
+                        flushed as it is written so that a run killed at any
+                        moment leaves on disk what it had found; the last line
+                        says the search ended, and its absence says the run was
+                        killed
   --onephase 1          the frontier in one phase: one search of the whole
                         tree, work stealing included, against a shared
                         diagram of the budgets known feasible. A node
@@ -869,12 +878,23 @@ fn cmd_pareto(args: &[String]) -> i32 {
             _ => return fail(&format!("--time-limit wants a positive number of seconds, found {t:?}")),
         },
     };
+    let onephase = args.flag("onephase").is_some();
+    let anytime = match args.flag("anytime") {
+        None => None,
+        Some(_) if !onephase => {
+            return fail("--anytime wants --onephase 1: in two phases the apexes are not recorded one by one")
+        }
+        Some(path) => match anytime::Sink::create(std::path::Path::new(path)) {
+            Ok(sink) => Some(std::sync::Arc::new(sink)),
+            Err(e) => return fail(&e),
+        },
+    };
     let print_strategy = args.flag("print-strategy").is_some();
     let started = Instant::now();
     let report = match pareto::frontier(
         &tree,
         pareto::Options {
-            onephase: args.flag("onephase").is_some(),
+            onephase,
             oracle: match args.flag("oracle").map(pareto::OracleKind::parse) {
                 None => pareto::OracleKind::Antichain,
                 Some(Some(k)) => k,
@@ -884,6 +904,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
             certificates,
             print_certificate: args.flag("print-certificate").is_some(),
             time_limit,
+            anytime,
             precision,
             components,
             library,

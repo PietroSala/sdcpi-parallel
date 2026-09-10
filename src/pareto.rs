@@ -27,7 +27,7 @@
 //! the search runs on rationals of arbitrary precision.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -36,6 +36,7 @@ use num_integer::Integer;
 use num_rational::BigRational;
 use num_traits::{One, ToPrimitive, Zero};
 
+use crate::anytime::{Progress, Sink};
 use crate::bound::bounds;
 use crate::num::Exact;
 use crate::search::{self, Answer, Config, FrontierOracle, Stats, Strategy};
@@ -674,6 +675,9 @@ pub struct Options {
     /// A budget of wall-clock time for the whole exploration; past it the
     /// loop stops and the frontier is reported as partial.
     pub time_limit: Option<Duration>,
+    /// The anytime buffer, where every apex is written as it is recorded, so
+    /// that a run killed before it ends leaves its work on disk.
+    pub anytime: Option<Arc<Sink>>,
     /// The tick, or `None` for the exact tick `1/D`.
     pub precision: Option<BigRational>,
     /// The components the frontier is taken over, the others left at their
@@ -880,6 +884,7 @@ struct Oracle<O: Obdd> {
     apexes: Mutex<Vec<Point>>,
     reads: AtomicUsize,
     pruned: AtomicUsize,
+    sink: Option<Arc<Sink>>,
 }
 
 impl<O: Obdd> FrontierOracle<Exact> for Oracle<O> {
@@ -913,6 +918,12 @@ impl<O: Obdd> FrontierOracle<Exact> for Oracle<O> {
         }
         let mut apexes = self.apexes.lock().unwrap();
         let n = apexes.len() + 1;
+        if let Some(sink) = &self.sink {
+            // under the lock of the apexes, which is not the lock the workers
+            // read: the lines come out in the order of the indices they carry
+            sink.point(n, &value, &ta, strategy.decisions.len(), strategy.histories,
+                       strategy.frontier_size);
+        }
         apexes.push(Point {
             value,
             ticks: ta,
@@ -923,6 +934,13 @@ impl<O: Obdd> FrontierOracle<Exact> for Oracle<O> {
                 open: strategy.frontier_size,
             }),
         });
+    }
+}
+
+impl<O: Obdd> Progress for Oracle<O> {
+    fn snapshot(&self) -> (usize, usize, usize) {
+        let apexes = self.apexes.lock().map(|a| a.len()).unwrap_or(0);
+        (apexes, self.reads.load(Ordering::Relaxed), self.pruned.load(Ordering::Relaxed))
     }
 }
 
@@ -937,6 +955,7 @@ struct Antichain {
     grid: Arc<Grid>,
     reads: AtomicUsize,
     pruned: AtomicUsize,
+    sink: Option<Arc<Sink>>,
 }
 
 fn below(a: &[Exact], v: &[Exact]) -> bool {
@@ -969,6 +988,10 @@ impl FrontierOracle<Exact> for Antichain {
         let ta: Vec<BigUint> = (0..k).map(|i| self.grid.tick_floor(i, &value[i])).collect();
         let mut apexes = self.apexes.lock().unwrap();
         let n = apexes.len() + 1;
+        if let Some(sink) = &self.sink {
+            sink.point(n, &value, &ta, strategy.decisions.len(), strategy.histories,
+                       strategy.frontier_size);
+        }
         apexes.push(Point {
             value,
             ticks: ta,
@@ -982,8 +1005,18 @@ impl FrontierOracle<Exact> for Antichain {
     }
 }
 
+impl Progress for Antichain {
+    fn snapshot(&self) -> (usize, usize, usize) {
+        let apexes = self.apexes.lock().map(|a| a.len()).unwrap_or(0);
+        (apexes, self.reads.load(Ordering::Relaxed), self.pruned.load(Ordering::Relaxed))
+    }
+}
+
 fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     let started = Instant::now();
+    if let Some(sink) = &opts.anytime {
+        sink.start(opts.search.workers);
+    }
     let set = setup::<O>(tree, &opts)?;
     let o = Arc::new(set.o);
     let grid = Arc::new(set.grid);
@@ -994,6 +1027,7 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         apexes: Mutex::new(Vec::new()),
         reads: AtomicUsize::new(0),
         pruned: AtomicUsize::new(0),
+        sink: opts.anytime.clone(),
     });
     let chain_oracle = Arc::new(Antichain {
         set: RwLock::new(Vec::new()),
@@ -1001,6 +1035,7 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         grid: grid.clone(),
         reads: AtomicUsize::new(0),
         pruned: AtomicUsize::new(0),
+        sink: opts.anytime.clone(),
     });
     let mut cfg = opts.search.clone();
     cfg.threshold = set.upper.iter().cloned().map(Exact).collect();
@@ -1014,9 +1049,38 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
     };
+    let beat_stop = Arc::new(AtomicBool::new(false));
+    let beat = opts.anytime.as_ref().map(|sink| {
+        let sink = sink.clone();
+        let stop = beat_stop.clone();
+        let progress: Arc<dyn Progress> = match opts.oracle {
+            OracleKind::Obdd => obdd_oracle.clone(),
+            OracleKind::Antichain => chain_oracle.clone(),
+        };
+        // the counters once a second, so that a run killed before it ends
+        // keeps them: the record at the end is the one thing a kill loses
+        std::thread::spawn(move || {
+            let mut ticks = 0u32;
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(100));
+                ticks += 1;
+                if ticks % 10 == 0 && !stop.load(Ordering::Relaxed) {
+                    let (a, r, p) = progress.snapshot();
+                    sink.stat(a, r, p);
+                }
+            }
+        })
+    });
+    if let Some(sink) = &opts.anytime {
+        sink.search(&set.components);
+    }
     let t1 = Instant::now();
     let (answer, st) = search::search::<Exact>(tree, cfg);
     let search_time = t1.elapsed();
+    beat_stop.store(true, Ordering::Relaxed);
+    if let Some(handle) = beat {
+        let _ = handle.join();
+    }
     let status = match answer {
         Answer::Timeout => Status::Timeout,
         Answer::Failed(e) => Status::Failed(e),
@@ -1037,12 +1101,26 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         ),
     };
     let added = apexes.len();
+    if let Some(sink) = &opts.anytime {
+        sink.end(
+            match status {
+                Status::Complete => "complete",
+                Status::Timeout => "timeout",
+                Status::Failed(_) => "failed",
+            },
+            added,
+            search_time.as_secs_f64(),
+        );
+    }
     let mut minimal = minimal_apexes(&apexes, &set.components);
     let components = set.components.clone();
     let proj = |p: &Point| -> Vec<BigRational> {
         components.iter().map(|&c| p.value[c].clone()).collect()
     };
     minimal.sort_by(|a, b| proj(a).cmp(&proj(b)));
+    if let Some(sink) = &opts.anytime {
+        sink.minimal(minimal.len());
+    }
     let elapsed = started.elapsed();
     Ok(Report {
         library: o.name(),

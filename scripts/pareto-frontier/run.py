@@ -31,20 +31,26 @@ so on until a round owes nothing.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
 import platform
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+import anytime as anytime_buffer
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 OLD = REPO / "scripts" / "storm-comparison-ablation"
-SDCPI = REPO / "target" / "release" / "sdcpi"
+# the binary, overridable so that a new one can be tried without replacing the
+# one a running campaign is using
+SDCPI = Path(os.environ.get("SDCPI_BIN") or REPO / "target" / "release" / "sdcpi")
 
 sys.path.insert(0, str(OLD))
 import make_bpmn_cpi as gen  # noqa: E402  the generator of stage 1, called and not copied
@@ -65,7 +71,10 @@ CONFS: list[tuple[str, list[str]]] = [("storm", [])] + [
     (f"onephase-w{w}", ["--onephase", "1", "--workers", str(w)]) for w in WORKERS
 ]
 BASELINE = "onephase-w1"
-UNDONE = ("timeout", "killed", "skipped")
+UNDONE = ("timeout", "killed", "skipped", "truncated")
+# how long past the budget the process is left to run before it is killed,
+# so that the buffer certainly reaches the budget itself
+SLACK = 5.0
 
 
 # The child in flight, so that a signal to the driver takes the child with
@@ -135,8 +144,10 @@ def host_info() -> dict:
 
 
 class Campaign:
-    def __init__(self, exp: Path, rnd: int, base_timeout: float, host: dict) -> None:
+    def __init__(self, exp: Path, rnd: int, base_timeout: float, host: dict,
+                 anytime: bool = False) -> None:
         self.exp = exp
+        self.anytime = anytime
         self.round = rnd
         self.timeout = base_timeout * (2 ** (rnd - 1))
         self.host = host
@@ -287,6 +298,8 @@ class Campaign:
         }
 
     def run_ours(self, key: str, conf: str, extra: list[str], yaml: Path) -> dict:
+        if self.anytime:
+            return self.run_ours_anytime(key, conf, extra, yaml)
         out = self.results / key / f"{conf}.r{self.round}.pareto.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         cmd = [str(SDCPI), "pareto", str(yaml), "--time-limit", str(self.timeout),
@@ -302,6 +315,45 @@ class Campaign:
         record = json.loads(out.read_text())
         out.unlink()
         record.update(tool="sdcpi", wall_seconds=wall, command=cmd)
+        return record
+
+    def run_ours_anytime(self, key: str, conf: str, extra: list[str], yaml: Path) -> dict:
+        """The run with the buffer: no time limit is given, the process is killed
+        past the budget without mercy, and the buffer is read back cut at the
+        budget. The frontier recorded is the one the search had at that instant,
+        so a run that does not finish is not lost and the budget is honoured to
+        the second, which the time limit of the tool is not."""
+        out = self.results / key / f"{conf}.r{self.round}.pareto.json"
+        buf = self.results / key / f"{conf}.r{self.round}.buffer.jsonl"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [str(SDCPI), "pareto", str(yaml), "--anytime", str(buf),
+               "--json", str(out)] + extra
+        started = time.monotonic()
+        code, so, se, killed = call(cmd, self.timeout + SLACK)
+        wall = time.monotonic() - started
+        record: dict = {}
+        if out.exists():                    # the search ended on its own
+            record = json.loads(out.read_text())
+            out.unlink()
+        if not buf.exists():
+            record.update(tool="sdcpi", status="failed", seconds=wall, command=cmd,
+                          returncode=code, killed=killed,
+                          stdout_tail=(so + se)[-2000:], note="no buffer")
+            return record
+        try:
+            report = anytime_buffer.Buffer(buf).report(self.timeout)
+        except Exception as e:              # a buffer of no use must not stop the sweep
+            record.update(tool="sdcpi", status="failed", seconds=wall, command=cmd,
+                          note=f"buffer unreadable: {e}")
+            return record
+        points = report.pop("points")
+        record.update(report)
+        record["points"] = [{"value": v} for v in points]
+        record.update(tool="sdcpi", wall_seconds=wall, command=cmd, killed=killed,
+                      buffer=str(buf.name) + ".gz")
+        with buf.open("rb") as raw, gzip.open(str(buf) + ".gz", "wb", compresslevel=9) as gz:
+            shutil.copyfileobj(raw, gz)
+        buf.unlink()
         return record
 
     def run_instance(self, n: int, i: int, k: int, d: int, m: str, only: set[str] | None) -> int:
@@ -345,6 +397,11 @@ def main() -> int:
     p.add_argument("--dimensions", type=int, nargs="+", default=list(range(2, 11)))
     p.add_argument("--modes", nargs="+", default=MODES)
     p.add_argument("--limit", type=int, default=None, help="stop after this many instances")
+    p.add_argument("--anytime", action="store_true",
+                   help="run ours with the anytime buffer: no time limit is given, "
+                        "the process is killed past the budget and the buffer is read "
+                        "back cut at the budget, so a run that does not finish keeps "
+                        "the frontier it had found")
     p.add_argument("--only", nargs="+", default=None,
                    help="a subset of the configurations, storm or <library>-<ablation>-w<workers>")
     a = p.parse_args()
@@ -365,10 +422,11 @@ def main() -> int:
     rnd = a.round
     rounds = 0
     while a.rounds is None or rounds < a.rounds:
-        campaign = Campaign(a.experiment.resolve(), rnd, a.timeout, host)
+        campaign = Campaign(a.experiment.resolve(), rnd, a.timeout, host, a.anytime)
         campaign.say(f"round {rnd}, timeout {campaign.timeout:g} s, "
                      f"{host['host']} {host['cpus']} cpus, "
-                     f"sdcpi {host['sdcpi_commit'][:12]}, {host['storm']}")
+                     f"sdcpi {host['sdcpi_commit'][:12]}, {host['storm']}"
+                     + (", anytime buffer" if a.anytime else ""))
         seen = 0
         runs = 0
         for n, i, k, d, m in instances(a.max_diagonal, a.dimensions, a.modes):
