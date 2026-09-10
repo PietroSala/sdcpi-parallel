@@ -164,6 +164,19 @@ options for pareto
                         and report the frontier found so far as partial; a
                         query never runs past the time left
   --json F              write the report to F as JSON as well
+  --onephase 1          the frontier in one phase: one search of the whole
+                        tree, work stealing included, against a shared
+                        diagram of the budgets known feasible. A node
+                        whose lower bound is a budget known feasible is
+                        closed, every completion being dominated or equal;
+                        an upper bound not known feasible is recorded with
+                        its partial strategy and the node goes on. The
+                        readers run at once, a recording waits for them.
+                        --extract and --certificate are not read
+  --oracle KIND         antichain | obdd                  (default antichain)
+                        what holds the budgets known feasible in one phase:
+                        the antichain of the apexes, one scan per test, or
+                        the diagram of the union of their cones
   --print-certificate 1 print, at every refusal, the budget asked and the
                         vectors of its certificate
   --print-strategy 1    print the strategy behind every point, and the
@@ -664,6 +677,7 @@ impl SearchOptions {
     fn config<N: Num>(&self, threshold: Vec<N>, record_strategy: bool) -> Config<N> {
         Config {
             threshold,
+            oracle: None,
             record_strategy,
             certificate: false,
             steal: self.steal,
@@ -860,6 +874,12 @@ fn cmd_pareto(args: &[String]) -> i32 {
     let report = match pareto::frontier(
         &tree,
         pareto::Options {
+            onephase: args.flag("onephase").is_some(),
+            oracle: match args.flag("oracle").map(pareto::OracleKind::parse) {
+                None => pareto::OracleKind::Antichain,
+                Some(Some(k)) => k,
+                Some(None) => return fail("--oracle wants antichain or obdd"),
+            },
             extract,
             certificates,
             print_certificate: args.flag("print-certificate").is_some(),
@@ -888,6 +908,13 @@ fn cmd_pareto(args: &[String]) -> i32 {
     };
     println!("instance       {}", tree.meta.key);
     println!("library        {}", report.library);
+    println!("mode           {}", if report.onephase { "one phase" } else { "two phases" });
+    if report.onephase {
+        println!(
+            "oracle         {}: {} membership tests, {} nodes closed on them, {} apexes recorded, size {}",
+            report.oracle.name(), report.oracle_reads, report.oracle_pruned, report.accepts, report.max_size
+        );
+    }
     println!("extract        {}", report.extract.name());
     println!("certificates   {}", report.certificates.name());
     match &report.denominator {
@@ -1007,6 +1034,10 @@ fn json_report(tree: &Tree, r: &pareto::Report, elapsed: Duration, decisions: bo
     o.push_str("{\n");
     o.push_str(&format!("  \"instance\": {},\n", esc(&tree.meta.key)));
     o.push_str(&format!("  \"library\": {},\n", esc(r.library)));
+    o.push_str(&format!("  \"onephase\": {},\n", r.onephase));
+    o.push_str(&format!("  \"oracle\": {},\n", esc(r.oracle.name())));
+    o.push_str(&format!("  \"oracle_reads\": {},\n", r.oracle_reads));
+    o.push_str(&format!("  \"oracle_pruned\": {},\n", r.oracle_pruned));
     o.push_str(&format!("  \"extract\": {},\n", esc(r.extract.name())));
     o.push_str(&format!("  \"certificates\": {},\n", esc(r.certificates.name())));
     o.push_str(&format!("  \"tick\": {},\n", esc(&r.epsilon.to_string())));

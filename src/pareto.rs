@@ -27,6 +27,8 @@
 //! the search runs on rationals of arbitrary precision.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use num_bigint::{BigInt, BigUint};
@@ -36,7 +38,7 @@ use num_traits::{One, ToPrimitive, Zero};
 
 use crate::bound::bounds;
 use crate::num::Exact;
-use crate::search::{self, Answer, Config, Stats};
+use crate::search::{self, Answer, Config, FrontierOracle, Stats, Strategy};
 use crate::state::Engine;
 use crate::tree::{Kind, Tree};
 
@@ -46,8 +48,8 @@ use crate::tree::{Kind, Tree};
 
 /// What the loop asks of a decision diagram library: variables, constants,
 /// the three connectives, a satisfiability test and a size.
-pub trait Obdd: Sized {
-    type F: Clone;
+pub trait Obdd: Sized + Send + Sync + 'static {
+    type F: Clone + Send + Sync + 'static;
     fn with_vars(n: usize) -> Result<Self, String>;
     fn name(&self) -> &'static str;
     fn var(&self, i: usize) -> Self::F;
@@ -69,6 +71,9 @@ pub trait Obdd: Sized {
     /// against the size of the diagram once per variable that the same walk
     /// written with conjunctions would cost.
     fn descend(&self, a: &Self::F, choose: &mut dyn FnMut(usize) -> bool) -> Vec<bool>;
+    /// The value of `a` at one assignment, a descent that reads and builds
+    /// nothing, safe for many readers at once.
+    fn eval(&self, a: &Self::F, bits: &[bool]) -> bool;
 }
 
 /// `biodivine-lib-bdd`: pure Rust, single threaded, the default.
@@ -143,6 +148,9 @@ impl Obdd for Biodivine {
             }
         }
         out
+    }
+    fn eval(&self, a: &Self::F, bits: &[bool]) -> bool {
+        a.eval_in(&biodivine_lib_bdd::BddValuation::new(bits.to_vec()))
     }
 }
 
@@ -240,6 +248,10 @@ impl Obdd for Oxidd {
                 .collect(),
         }
     }
+    fn eval(&self, a: &Self::F, bits: &[bool]) -> bool {
+        use oxidd::BooleanFunction;
+        a.eval(bits.iter().enumerate().map(|(i, &b)| (i as u32, b)))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +315,30 @@ impl Grid {
         } else {
             f.to_biguint().unwrap_or_default()
         }
+    }
+
+    /// The tightest tick at or above the value: `ceil((u_i - v) / eps)`, the
+    /// grid point at or below `v`. Some budget known feasible below that
+    /// point is below `v` as well, which is what a membership test needs.
+    fn tick_ceil(&self, i: usize, v: &BigRational) -> BigUint {
+        ceil_to_uint(&((&self.upper[i] - v) / &self.eps))
+    }
+
+    /// The bits of a tick vector, most significant first, or `None` when a
+    /// tick does not fit its component, the point lying outside the box.
+    fn bits_of(&self, ticks: &[BigUint]) -> Option<Vec<bool>> {
+        let n: usize = self.comps.iter().map(|c| c.len()).sum();
+        let mut bits = vec![false; n];
+        for (vars, t) in self.comps.iter().zip(ticks) {
+            let b = vars.len() as u64;
+            if t.bits() > b {
+                return None;
+            }
+            for j in 0..b {
+                bits[vars[(b - 1 - j) as usize]] = t.bit(j);
+            }
+        }
+        Some(bits)
     }
 
     /// The cone of the budgets at least the apex of ticks `ta`: `t <= ta` in
@@ -597,7 +633,39 @@ impl Library {
     }
 }
 
+/// What holds the budgets known feasible in the one-phase search.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OracleKind {
+    /// The antichain of the apexes themselves, a list of vectors: a budget
+    /// is known feasible when some apex is below it, one scan of the list.
+    Antichain,
+    /// The diagram of the grid points above some apex, the union of the
+    /// cones, a membership test being one descent.
+    Obdd,
+}
+
+impl OracleKind {
+    pub fn parse(text: &str) -> Option<OracleKind> {
+        match text {
+            "antichain" => Some(OracleKind::Antichain),
+            "obdd" => Some(OracleKind::Obdd),
+            _ => None,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            OracleKind::Antichain => "antichain",
+            OracleKind::Obdd => "obdd",
+        }
+    }
+}
+
 pub struct Options {
+    /// The frontier in one phase: one search of the whole tree against a
+    /// shared record of the budgets known feasible, in place of the loop of
+    /// decision queries.
+    pub onephase: bool,
+    pub oracle: OracleKind,
     pub extract: Extract,
     pub certificates: Certificates,
     /// Whether every refusal prints the budget it was asked and the vectors
@@ -653,6 +721,12 @@ pub enum Status {
 
 pub struct Report {
     pub library: &'static str,
+    pub onephase: bool,
+    pub oracle: OracleKind,
+    /// One phase only: the membership tests the search made and the nodes it
+    /// closed on them.
+    pub oracle_reads: usize,
+    pub oracle_pruned: usize,
     pub extract: Extract,
     pub certificates: Certificates,
     pub epsilon: BigRational,
@@ -687,10 +761,322 @@ pub struct Report {
 }
 
 pub fn frontier(tree: &Tree, opts: Options) -> Result<Report, String> {
-    match opts.library {
-        Library::Biodivine => run::<Biodivine>(tree, opts),
-        Library::Oxidd => run::<Oxidd>(tree, opts),
+    match (opts.library, opts.onephase) {
+        (Library::Biodivine, false) => run::<Biodivine>(tree, opts),
+        (Library::Oxidd, false) => run::<Oxidd>(tree, opts),
+        (Library::Biodivine, true) => run_onephase::<Biodivine>(tree, opts),
+        (Library::Oxidd, true) => run_onephase::<Oxidd>(tree, opts),
     }
+}
+
+/// The minimal apexes, compared on the grid: an apex is redundant when
+/// another one is at least as tight in every component kept, its cone lying
+/// inside the other. Among equal ticks the one with a witness wins, then the
+/// earlier one.
+fn minimal_apexes(apexes: &[Point], components: &[usize]) -> Vec<Point> {
+    let key = |p: &Point, i: usize| (p.witness.is_none(), i);
+    let mut out = Vec::new();
+    for (i, a) in apexes.iter().enumerate() {
+        let dominated = apexes.iter().enumerate().any(|(j, b)| {
+            j != i
+                && components.iter().all(|&c| b.ticks[c] >= a.ticks[c])
+                && (components.iter().any(|&c| b.ticks[c] != a.ticks[c])
+                    || key(b, j) < key(a, i))
+        });
+        if !dominated {
+            out.push(a.clone());
+        }
+    }
+    out
+}
+
+/// The grid and the box of one instance, shared by the two modes.
+struct Setup<O: Obdd> {
+    upper: Vec<BigRational>,
+    lower: Vec<BigRational>,
+    eps: BigRational,
+    denominator: Option<BigInt>,
+    ticks: Vec<BigUint>,
+    bits: Vec<usize>,
+    components: Vec<usize>,
+    grid: Grid,
+    o: O,
+}
+
+fn setup<O: Obdd>(tree: &Tree, opts: &Options) -> Result<Setup<O>, String> {
+    let k = tree.k;
+    let engine = Engine::new(tree);
+    let s0 = engine.initial_state();
+    let b = bounds::<Exact>(tree, &s0);
+    let upper: Vec<BigRational> = b.upper.into_iter().map(|e| e.0).collect();
+    let lower: Vec<BigRational> = b.lower.into_iter().map(|e| e.0).collect();
+    let (eps, denominator) = match &opts.precision {
+        Some(e) => {
+            if e <= &BigRational::zero() {
+                return Err("the precision must be positive".to_string());
+            }
+            (e.clone(), None)
+        }
+        None => {
+            let d = denominator(tree);
+            (BigRational::new(BigInt::one(), d.clone()), Some(d))
+        }
+    };
+    let components: Vec<usize> = match &opts.components {
+        Some(c) => {
+            if c.is_empty() || c.iter().any(|&i| i >= k) {
+                return Err(format!("--components names a component outside 0..{k}"));
+            }
+            let mut c = c.clone();
+            c.sort_unstable();
+            c.dedup();
+            c
+        }
+        None => (0..k).collect(),
+    };
+    let ticks: Vec<BigUint> = (0..k)
+        .map(|i| {
+            if components.contains(&i) {
+                ceil_to_uint(&((&upper[i] - &lower[i]) / &eps))
+            } else {
+                BigUint::zero()
+            }
+        })
+        .collect();
+    let bits: Vec<usize> = ticks.iter().map(|t| t.bits() as usize).collect();
+    let mut comps: Vec<Vec<usize>> = Vec::with_capacity(k);
+    let mut next = 0usize;
+    for &b in &bits {
+        comps.push((next..next + b).collect());
+        next += b;
+    }
+    let o = O::with_vars(next)?;
+    let grid = Grid {
+        eps: eps.clone(),
+        upper: upper.clone(),
+        lower: lower.clone(),
+        ticks: ticks.clone(),
+        comps,
+    };
+    Ok(Setup {
+        upper,
+        lower,
+        eps,
+        denominator,
+        ticks,
+        bits,
+        components,
+        grid,
+        o,
+    })
+}
+
+/// The shared diagram of the budgets known feasible, read by every worker of
+/// the one-phase search at once and written by one at a time.
+struct Oracle<O: Obdd> {
+    o: Arc<O>,
+    grid: Arc<Grid>,
+    sol: RwLock<O::F>,
+    apexes: Mutex<Vec<Point>>,
+    reads: AtomicUsize,
+    pruned: AtomicUsize,
+}
+
+impl<O: Obdd> FrontierOracle<Exact> for Oracle<O> {
+    fn known(&self, v: &[Exact]) -> bool {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        let k = self.grid.comps.len();
+        let ticks: Vec<BigUint> = (0..k).map(|i| self.grid.tick_ceil(i, &v[i].0)).collect();
+        let bits = match self.grid.bits_of(&ticks) {
+            Some(b) => b,
+            None => return false,
+        };
+        let known = {
+            let sol = self.sol.read().unwrap();
+            self.o.eval(&sol, &bits)
+        };
+        if known {
+            self.pruned.fetch_add(1, Ordering::Relaxed);
+        }
+        known
+    }
+
+    fn add(&self, v: &[Exact], strategy: Strategy<Exact>) {
+        let k = self.grid.comps.len();
+        let value: Vec<BigRational> = v.iter().map(|e| e.0.clone()).collect();
+        let ta: Vec<BigUint> = (0..k).map(|i| self.grid.tick_floor(i, &value[i])).collect();
+        // built outside the lock: the readers go on while the cone is made
+        let cone = self.grid.cone_above(&*self.o, &ta);
+        {
+            let mut sol = self.sol.write().unwrap();
+            *sol = self.o.or(&sol, &cone);
+        }
+        let mut apexes = self.apexes.lock().unwrap();
+        let n = apexes.len() + 1;
+        apexes.push(Point {
+            value,
+            ticks: ta,
+            origin: Origin::Query(n),
+            witness: Some(Witness {
+                decisions: strategy.decisions,
+                histories: strategy.histories,
+                open: strategy.frontier_size,
+            }),
+        });
+    }
+}
+
+/// The budgets known feasible as the antichain of the apexes: a list of
+/// vectors kept free of dominated members, read by every worker at once and
+/// written by one at a time. A budget is known feasible when some apex is
+/// below it, which is one scan of the list with exact comparisons, and the
+/// list is the frontier when the search is over.
+struct Antichain {
+    set: RwLock<Vec<Vec<Exact>>>,
+    apexes: Mutex<Vec<Point>>,
+    grid: Arc<Grid>,
+    reads: AtomicUsize,
+    pruned: AtomicUsize,
+}
+
+fn below(a: &[Exact], v: &[Exact]) -> bool {
+    a.iter().zip(v).all(|(x, y)| x.0 <= y.0)
+}
+
+impl FrontierOracle<Exact> for Antichain {
+    fn known(&self, v: &[Exact]) -> bool {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        let known = self.set.read().unwrap().iter().any(|a| below(a, v));
+        if known {
+            self.pruned.fetch_add(1, Ordering::Relaxed);
+        }
+        known
+    }
+
+    fn add(&self, v: &[Exact], strategy: Strategy<Exact>) {
+        {
+            let mut set = self.set.write().unwrap();
+            // another worker may have recorded a budget below this one since
+            // the test that brought us here
+            if set.iter().any(|a| below(a, v)) {
+                return;
+            }
+            set.retain(|a| !below(v, a));
+            set.push(v.to_vec());
+        }
+        let k = self.grid.comps.len();
+        let value: Vec<BigRational> = v.iter().map(|e| e.0.clone()).collect();
+        let ta: Vec<BigUint> = (0..k).map(|i| self.grid.tick_floor(i, &value[i])).collect();
+        let mut apexes = self.apexes.lock().unwrap();
+        let n = apexes.len() + 1;
+        apexes.push(Point {
+            value,
+            ticks: ta,
+            origin: Origin::Query(n),
+            witness: Some(Witness {
+                decisions: strategy.decisions,
+                histories: strategy.histories,
+                open: strategy.frontier_size,
+            }),
+        });
+    }
+}
+
+fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
+    let started = Instant::now();
+    let set = setup::<O>(tree, &opts)?;
+    let o = Arc::new(set.o);
+    let grid = Arc::new(set.grid);
+    let obdd_oracle = Arc::new(Oracle {
+        o: o.clone(),
+        grid: grid.clone(),
+        sol: RwLock::new(o.fls()),
+        apexes: Mutex::new(Vec::new()),
+        reads: AtomicUsize::new(0),
+        pruned: AtomicUsize::new(0),
+    });
+    let chain_oracle = Arc::new(Antichain {
+        set: RwLock::new(Vec::new()),
+        apexes: Mutex::new(Vec::new()),
+        grid: grid.clone(),
+        reads: AtomicUsize::new(0),
+        pruned: AtomicUsize::new(0),
+    });
+    let mut cfg = opts.search.clone();
+    cfg.threshold = set.upper.iter().cloned().map(Exact).collect();
+    cfg.record_strategy = true;
+    cfg.certificate = false;
+    cfg.oracle = Some(match opts.oracle {
+        OracleKind::Obdd => obdd_oracle.clone() as Arc<dyn FrontierOracle<Exact>>,
+        OracleKind::Antichain => chain_oracle.clone() as Arc<dyn FrontierOracle<Exact>>,
+    });
+    cfg.timeout = match (cfg.timeout, opts.time_limit) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    let t1 = Instant::now();
+    let (answer, st) = search::search::<Exact>(tree, cfg);
+    let search_time = t1.elapsed();
+    let status = match answer {
+        Answer::Timeout => Status::Timeout,
+        Answer::Failed(e) => Status::Failed(e),
+        _ => Status::Complete,
+    };
+    let (apexes, reads, pruned, sol_size) = match opts.oracle {
+        OracleKind::Obdd => (
+            std::mem::take(&mut *obdd_oracle.apexes.lock().unwrap()),
+            obdd_oracle.reads.load(Ordering::Relaxed),
+            obdd_oracle.pruned.load(Ordering::Relaxed),
+            o.size(&obdd_oracle.sol.read().unwrap()),
+        ),
+        OracleKind::Antichain => (
+            std::mem::take(&mut *chain_oracle.apexes.lock().unwrap()),
+            chain_oracle.reads.load(Ordering::Relaxed),
+            chain_oracle.pruned.load(Ordering::Relaxed),
+            chain_oracle.set.read().unwrap().len(),
+        ),
+    };
+    let added = apexes.len();
+    let mut minimal = minimal_apexes(&apexes, &set.components);
+    let components = set.components.clone();
+    let proj = |p: &Point| -> Vec<BigRational> {
+        components.iter().map(|&c| p.value[c].clone()).collect()
+    };
+    minimal.sort_by(|a, b| proj(a).cmp(&proj(b)));
+    let elapsed = started.elapsed();
+    Ok(Report {
+        library: o.name(),
+        onephase: true,
+        oracle: opts.oracle,
+        oracle_reads: reads,
+        oracle_pruned: pruned,
+        extract: opts.extract,
+        certificates: opts.certificates,
+        epsilon: set.eps,
+        denominator: set.denominator,
+        upper: set.upper,
+        lower: set.lower,
+        ticks: set.ticks,
+        bits: set.bits,
+        components: set.components,
+        queries: 0,
+        accepts: added,
+        fails: 0,
+        witness_queries: 0,
+        certified: 0,
+        cert_vectors: 0,
+        cone_built: added,
+        cone_hits: 0,
+        max_size: sol_size,
+        search_time,
+        obdd_time: elapsed.saturating_sub(search_time),
+        extract_time: Duration::ZERO,
+        cone_time: Duration::ZERO,
+        merge_time: Duration::ZERO,
+        search: st,
+        status,
+        points: minimal,
+    })
 }
 
 fn accumulate(total: &mut Stats, st: &Stats) {
@@ -1000,23 +1386,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     // and the accepting sum of that run, at most the point and equal to it on
     // the components of the frontier, replaces it; the filter runs once more
     // after that, a replaced value being able to retire others.
-    let key = |p: &Point, i: usize| (p.witness.is_none(), i);
-    let minimal_apexes = |apexes: &[Point]| -> Vec<Point> {
-        let mut out = Vec::new();
-        for (i, a) in apexes.iter().enumerate() {
-            let dominated = apexes.iter().enumerate().any(|(j, b)| {
-                j != i
-                    && components.iter().all(|&c| b.ticks[c] >= a.ticks[c])
-                    && (components.iter().any(|&c| b.ticks[c] != a.ticks[c])
-                        || key(b, j) < key(a, i))
-            });
-            if !dominated {
-                out.push(a.clone());
-            }
-        }
-        out
-    };
-    let mut minimal = minimal_apexes(&apexes);
+    let mut minimal = minimal_apexes(&apexes, &components);
     let mut witness_queries = 0usize;
     if matches!(status, Status::Complete) {
         for p in minimal.iter_mut() {
@@ -1044,7 +1414,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                 });
             }
         }
-        minimal = minimal_apexes(&minimal);
+        minimal = minimal_apexes(&minimal, &components);
     }
     let proj = |p: &Point| -> Vec<BigRational> {
         components.iter().map(|&c| p.value[c].clone()).collect()
@@ -1053,6 +1423,10 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
 
     Ok(Report {
         library: o.name(),
+        onephase: false,
+        oracle: opts.oracle,
+        oracle_reads: 0,
+        oracle_pruned: 0,
         extract: opts.extract,
         certificates: opts.certificates,
         epsilon: eps,

@@ -104,9 +104,29 @@ impl Steal {
     }
 }
 
+/// What a frontier search asks of the shared diagram of the budgets known
+/// feasible, in place of a threshold: whether a vector is a budget known
+/// feasible already, which every worker reads at once, and the recording of
+/// the budget the winning frontier of a node pays with the partial strategy
+/// behind it, which one worker writes at a time.
+pub trait FrontierOracle<N: Num>: Send + Sync {
+    /// Whether some budget known feasible lies below `v`: then every
+    /// strategy paying at least `v` is dominated or equal, and nothing below
+    /// a node whose lower bound is `v` can be a new point of the frontier.
+    fn known(&self, v: &[N]) -> bool;
+    /// The budget `v` is feasible, every completion of the strategy paying at
+    /// most that; the cone above it enters the diagram.
+    fn add(&self, v: &[N], strategy: Strategy<N>);
+}
+
 #[derive(Clone)]
 pub struct Config<N: Num> {
     pub threshold: Vec<N>,
+    /// The search for the frontier in one phase: with an oracle the search
+    /// closes a node whose lower bound is a budget known feasible and records
+    /// every upper bound not known feasible, and never stops on an accept;
+    /// the threshold is not read.
+    pub oracle: Option<Arc<dyn FrontierOracle<N>>>,
     /// Whether to keep the decisions taken, so that the strategy can be
     /// returned. When the caller only wants the answer there is no reason to
     /// build the chain: it costs an allocation and a shared counter per
@@ -614,28 +634,66 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
             peak_here = open_now;
         }
 
-        if cfg.ablation.accept_early() || closed {
-            node.frontier.accepting(&mut scratch);
-            if leq(&scratch, &cfg.threshold, cfg.epsilon) {
-                publish(shared, expanded_here, peak_here, &mut cert);
-                shared.finish(Answer::Yes(Strategy {
-                    decisions: resolve(&node.sigma),
-                    frontier_size: open_now as usize,
-                    histories: node.frontier.total,
-                    accepting: scratch.clone(),
-                }));
-                return;
+        if let Some(oracle) = &cfg.oracle {
+            // The frontier in one phase. The upper bound of the node is a
+            // feasible budget, recorded with the partial strategy when no
+            // budget below it is known yet, and the node goes on, its
+            // completions possibly paying less. The lower bound closes the
+            // node when a budget below it is known already, every completion
+            // being dominated or equal.
+            if cfg.ablation.accept_early() || closed {
+                node.frontier.accepting(&mut scratch);
+                if !oracle.known(&scratch) {
+                    oracle.add(
+                        &scratch,
+                        Strategy {
+                            decisions: resolve(&node.sigma),
+                            frontier_size: open_now as usize,
+                            histories: node.frontier.total,
+                            accepting: scratch.clone(),
+                        },
+                    );
+                }
             }
-        }
-        if cfg.ablation.reject_early() || closed {
-            node.frontier.rejecting(&mut scratch);
+            if cfg.ablation.reject_early() || closed {
+                node.frontier.rejecting(&mut scratch);
+            } else {
+                node.frontier.accumulated(&mut scratch);
+            }
+            if closed || oracle.known(&scratch) {
+                match local.pop_back() {
+                    Some(next) => {
+                        node = next;
+                        continue;
+                    }
+                    None => {
+                        publish(shared, expanded_here, peak_here, &mut cert);
+                        return;
+                    }
+                }
+            }
         } else {
-            // the lower bound is ablated away, and what is left is not nothing:
-            // a frontier that has already paid more than the threshold in some
-            // component cannot be completed into a strategy that has not
-            node.frontier.accumulated(&mut scratch);
-        }
-        {
+            if cfg.ablation.accept_early() || closed {
+                node.frontier.accepting(&mut scratch);
+                if leq(&scratch, &cfg.threshold, cfg.epsilon) {
+                    publish(shared, expanded_here, peak_here, &mut cert);
+                    shared.finish(Answer::Yes(Strategy {
+                        decisions: resolve(&node.sigma),
+                        frontier_size: open_now as usize,
+                        histories: node.frontier.total,
+                        accepting: scratch.clone(),
+                    }));
+                    return;
+                }
+            }
+            if cfg.ablation.reject_early() || closed {
+                node.frontier.rejecting(&mut scratch);
+            } else {
+                // the lower bound is ablated away, and what is left is not nothing:
+                // a frontier that has already paid more than the threshold in some
+                // component cannot be completed into a strategy that has not
+                node.frontier.accumulated(&mut scratch);
+            }
             if !leq(&scratch, &cfg.threshold, cfg.epsilon) {
                 // The leaf certifies that every strategy through it pays at
                 // least the sum in hand, the rejecting one or the accumulated
@@ -654,18 +712,19 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
                     }
                 }
             }
-        }
-        if closed {
-            // Both tests were taken, the two sums being the same number here,
-            // and the accepting one failed: this branch carries no strategy.
-            match local.pop_back() {
-                Some(next) => {
-                    node = next;
-                    continue;
-                }
-                None => {
-                    publish(shared, expanded_here, peak_here, &mut cert);
-                    return;
+            if closed {
+                // Both tests were taken, the two sums being the same number
+                // here, and the accepting one failed: this branch carries no
+                // strategy.
+                match local.pop_back() {
+                    Some(next) => {
+                        node = next;
+                        continue;
+                    }
+                    None => {
+                        publish(shared, expanded_here, peak_here, &mut cert);
+                        return;
+                    }
                 }
             }
         }
