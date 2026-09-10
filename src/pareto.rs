@@ -27,8 +27,8 @@
 //! the search runs on rationals of arbitrary precision.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use num_bigint::{BigInt, BigUint};
@@ -1049,7 +1049,12 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
     };
-    let beat_stop = Arc::new(AtomicBool::new(false));
+    // the counters once a second, so that a run killed before it ends keeps
+    // them: the record at the end is the one thing a kill loses. The wait is
+    // on a condition and not a sleep, so that the end of the search stops the
+    // thread at once: a sleep would hold every run back by its own period,
+    // which on the instances that finish in microseconds is the whole run.
+    let beat_stop = Arc::new((Mutex::new(false), Condvar::new()));
     let beat = opts.anytime.as_ref().map(|sink| {
         let sink = sink.clone();
         let stop = beat_stop.clone();
@@ -1057,14 +1062,13 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
             OracleKind::Obdd => obdd_oracle.clone(),
             OracleKind::Antichain => chain_oracle.clone(),
         };
-        // the counters once a second, so that a run killed before it ends
-        // keeps them: the record at the end is the one thing a kill loses
         std::thread::spawn(move || {
-            let mut ticks = 0u32;
-            while !stop.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(100));
-                ticks += 1;
-                if ticks % 10 == 0 && !stop.load(Ordering::Relaxed) {
+            let (lock, cv) = &*stop;
+            let mut done = lock.lock().unwrap();
+            while !*done {
+                let (guard, waited) = cv.wait_timeout(done, Duration::from_secs(1)).unwrap();
+                done = guard;
+                if waited.timed_out() && !*done {
                     let (a, r, p) = progress.snapshot();
                     sink.stat(a, r, p);
                 }
@@ -1077,7 +1081,11 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     let t1 = Instant::now();
     let (answer, st) = search::search::<Exact>(tree, cfg);
     let search_time = t1.elapsed();
-    beat_stop.store(true, Ordering::Relaxed);
+    {
+        let (lock, cv) = &*beat_stop;
+        *lock.lock().unwrap() = true;
+        cv.notify_all();
+    }
     if let Some(handle) = beat {
         let _ = handle.join();
     }
