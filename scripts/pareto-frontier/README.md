@@ -23,19 +23,22 @@ from two to ten, the modes are the six of the benchmark.
 
 ## The runs
 
-One instance is asked for the frontier of all its expected impacts
-thirty-three times, in this order:
+One instance is asked for the frontier of all its expected impacts five
+times, in this order:
 
 | Configuration | Command |
 |---|---|
 | `storm` | `storm --prism <model> --prop <multi> --purescheds --exact`, one core |
-| `<library>-<ablation>-w<workers>` | `sdcpi pareto --obdd-library L --ablation A --workers N` |
+| `onephase-w<workers>` | `sdcpi pareto --onephase 1 --workers N`, one, two, four, eight |
 
-with the library `biodivine` or `oxidd`, the ablation `both`, `accept`,
-`reject` or `none`, and one, two, four or eight workers: every library
-crossed with every ablation and every number of workers, thirty-two runs
-of ours. The baseline every other run is compared with is
-`biodivine-both-w1`, the one compared with Storm at equal resources.
+The baseline every other run is compared with is `onephase-w1`, the one
+compared with Storm at equal resources. Until 2026-09-10 the campaign ran
+the loop in two phases instead, thirty-two configurations named
+`<library>-<ablation>-w<workers>`, every library behind the diagrams
+crossed with every ablation of the search and every number of workers;
+their records on the first five diagonals stay in `results/` beside the
+new ones and in the snapshot `results-twophase-2026-09-10/`, and are not
+run any more.
 
 The model and the property of Storm come from `sdcpi to_prism` and
 `sdcpi to_objective --pareto true`. Every run of ours is at the exact tick

@@ -7,11 +7,9 @@
 
 Every instance of the grid of the journal paper is regenerated from the
 stable seed of stage 1 of storm-comparison-ablation, nothing is copied,
-and asked for the frontier of all its expected impacts thirty-three
-times: once by Storm on one core, and thirty-two times by sdcpi pareto,
-every library behind the diagrams, biodivine and OxiDD, crossed with
-every ablation of the search, both tests, accept only, reject only and
-none, and with one, two, four and eight workers. The order of the
+and asked for the frontier of all its expected impacts five times: once
+by Storm on one core, and four times by sdcpi pareto in one phase, at
+one, two, four and eight workers. The order of the
 campaign is by diagonal, nesting plus independence, then process, then
 number of impacts, then the six modes, then the configurations, so that a cut
 at any moment leaves a record usable from the smallest instances up.
@@ -58,17 +56,15 @@ WORKERS = [1, 2, 4, 8]
 ABLATIONS = ["both", "accept", "reject", "none"]
 LIBRARIES = ["biodivine", "oxidd"]
 
-# The thirty-three configurations of one instance, in the order they run:
-# Storm, then every library, every ablation and every number of workers,
-# named `<library>-<ablation>-w<workers>`.
+# The configurations of one instance, in the order they run: Storm, then the
+# frontier in one phase at one, two, four and eight workers. The thirty-two
+# configurations of the loop in two phases, `<library>-<ablation>-w<workers>`,
+# ran on the first five diagonals until 2026-09-10 and their records stay
+# where they are, beside the ones written now; they are not run any more.
 CONFS: list[tuple[str, list[str]]] = [("storm", [])] + [
-    (f"{lib}-{abl}-w{w}",
-     ["--workers", str(w), "--ablation", abl, "--obdd-library", lib])
-    for lib in LIBRARIES
-    for abl in ABLATIONS
-    for w in WORKERS
+    (f"onephase-w{w}", ["--onephase", "1", "--workers", str(w)]) for w in WORKERS
 ]
-BASELINE = "biodivine-both-w1"
+BASELINE = "onephase-w1"
 UNDONE = ("timeout", "killed", "skipped")
 
 

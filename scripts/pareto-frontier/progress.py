@@ -40,6 +40,9 @@ def grid_size(diag: int) -> int:
     return pairs * 10 * 9 * len(MODES)
 
 
+CONF_NAMES_SET = set(CONF_NAMES)
+
+
 def points_of(rec: dict, objectives: list[int] | None = None) -> frozenset | None:
     """The frontier of a record as a set of exact tuples, projected on the
     objectives Storm was asked, the components identically zero left out."""
@@ -71,14 +74,17 @@ def main() -> int:
     for inst in sorted(results.iterdir()):
         recs = {}
         for f in inst.glob(f"*.r{a.round}.json"):
-            recs[f.name.split(".")[0]] = json.loads(f.read_text())
+            conf = f.name.split(".")[0]
+            if conf not in CONF_NAMES:
+                continue  # a record of a configuration no longer run
+            recs[conf] = json.loads(f.read_text())
             latest = max(latest, (f.stat().st_mtime, inst.name))
         if not recs:
             continue
         d = by_diag[diagonal_of(inst.name)]
         d["inst"] += 1
-        d["runs"] += len(recs)
-        if len(recs) == len(CONF_NAMES):
+        d["runs"] += sum(1 for c in recs if c in CONF_NAMES)
+        if all(c in recs for c in CONF_NAMES):
             d["done"] += 1
         ours = points_of(recs[BASELINE]) if BASELINE in recs else None
         for c, r in recs.items():
