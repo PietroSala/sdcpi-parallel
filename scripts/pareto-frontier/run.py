@@ -347,7 +347,8 @@ class Campaign:
         if not buf.exists():
             record.update(tool="sdcpi", status="failed", seconds=wall, command=cmd,
                           returncode=code, killed=killed,
-                          stdout_tail=(so + se)[-2000:], note="no buffer")
+                          stdout_tail=(so + se)[-2000:], note="no buffer",
+                          points_found=0)
             return record
         try:
             report = anytime_buffer.Buffer(buf).report(self.timeout)
@@ -360,6 +361,9 @@ class Campaign:
         record["points"] = [{"value": v} for v in points]
         record.update(tool="sdcpi", wall_seconds=wall, command=cmd, killed=killed,
                       buffer=str(buf.name) + ".gz")
+        # a run cut at the budget has no time of its own to report, the tool
+        # never having written its record: the budget is what it was given
+        record.setdefault("seconds", min(wall, self.timeout))
         with buf.open("rb") as raw, gzip.open(str(buf) + ".gz", "wb", compresslevel=9) as gz:
             shutil.copyfileobj(raw, gz)
         buf.unlink()
