@@ -154,9 +154,10 @@ def host_info() -> dict:
 
 class Campaign:
     def __init__(self, exp: Path, rnd: int, base_timeout: float, host: dict,
-                 anytime: bool = False) -> None:
+                 anytime: bool = False, dead_cells: bool = True) -> None:
         self.exp = exp
         self.anytime = anytime
+        self.dead_cells = dead_cells
         self.round = rnd
         self.timeout = base_timeout * (2 ** (rnd - 1))
         self.host = host
@@ -377,7 +378,7 @@ class Campaign:
                 continue
             if not self.due(key, conf):
                 continue
-            since = self.dead_since(conf, d, m, n + i)
+            since = self.dead_since(conf, d, m, n + i) if self.dead_cells else None
             if since is not None:
                 record = {"tool": "storm" if conf == "storm" else "sdcpi", "status": "skipped",
                           "seconds": 0.0, "points": [], "dead_since_diagonal": since}
@@ -415,6 +416,9 @@ def main() -> int:
                         "the process is killed past the budget and the buffer is read "
                         "back cut at the budget, so a run that does not finish keeps "
                         "the frontier it had found")
+    p.add_argument("--no-dead-cells", action="store_true",
+                   help="run every cell whatever happened on the diagonal before: the "
+                        "sweep is bounded by --max-diagonal and the time, not by the rule")
     p.add_argument("--only", nargs="+", default=None,
                    help="a subset of the configurations, storm or <library>-<ablation>-w<workers>")
     a = p.parse_args()
@@ -435,11 +439,13 @@ def main() -> int:
     rnd = a.round
     rounds = 0
     while a.rounds is None or rounds < a.rounds:
-        campaign = Campaign(a.experiment.resolve(), rnd, a.timeout, host, a.anytime)
+        campaign = Campaign(a.experiment.resolve(), rnd, a.timeout, host, a.anytime,
+                            dead_cells=not a.no_dead_cells)
         campaign.say(f"round {rnd}, timeout {campaign.timeout:g} s, "
                      f"{host['host']} {host['cpus']} cpus, "
                      f"sdcpi {host['sdcpi_commit'][:12]}, {host['storm']}"
-                     + (", anytime buffer" if a.anytime else ""))
+                     + (", anytime buffer" if a.anytime else "")
+                     + (", dead cells off" if a.no_dead_cells else ""))
         seen = 0
         runs = 0
         for n, i, k, d, m in instances(a.max_diagonal, a.dimensions, a.modes):
