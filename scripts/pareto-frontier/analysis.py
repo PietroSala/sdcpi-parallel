@@ -286,7 +286,8 @@ class Scan:
         self.differing: dict[str, list[str]] = {}
 
 
-def scan(results: Path, baseline: str, max_diagonal: int | None = None) -> Scan:
+def scan(results: Path, baseline: str, max_diagonal: int | None = None,
+         storm_max_diagonal: int | None = None) -> Scan:
     """One pass over every instance folder, up to a diagonal when one is given:
     the campaign sweeps on past the diagonals the paper declares, and the
     records it writes there stay out of the numbers."""
@@ -309,7 +310,8 @@ def scan(results: Path, baseline: str, max_diagonal: int | None = None) -> Scan:
                 continue
             s.confs.add(conf)
             take_run(s, axes, conf, rec)
-        if STORM_CONF in recs:
+        if STORM_CONF in recs and not (
+                storm_max_diagonal is not None and axes["diagonal"] > storm_max_diagonal):
             take_storm(s, axes, folder.name, recs[STORM_CONF], recs.get(baseline))
     return s
 
@@ -727,10 +729,12 @@ def main() -> int:
                    help="the instants of the mean anytime curve")
     p.add_argument("--max-diagonal", type=int, default=None,
                    help="the last diagonal the paper declares; the records beyond it stay out")
+    p.add_argument("--storm-max-diagonal", type=int, default=None,
+                   help="the last diagonal Storm has swept entire; its records beyond it stay out")
     a = p.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
 
-    s = scan(a.results, a.baseline, a.max_diagonal)
+    s = scan(a.results, a.baseline, a.max_diagonal, a.storm_max_diagonal)
     grid = grid_of(s)
     ablations = sorted({parse_conf(c)[0] for c in s.confs})
     workers = sorted({parse_conf(c)[1] for c in s.confs})
