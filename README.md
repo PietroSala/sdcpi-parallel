@@ -26,6 +26,19 @@ cargo build --release
 ./target/release/sdcpi determine examples/tiny.yaml --B 0.9,0.7
 ```
 
+## The page
+
+    sdcpi serve                 # then open http://127.0.0.1:8080
+    sdcpi serve --port 9000
+
+One page on the loopback address, a mask over `pareto`: paste a process,
+choose the workers, the ablation and a time limit, and read the frontier with
+the strategy that attains every point. The server is in the binary, so there
+is nothing to install beyond what is already there, it runs on the three
+desktop systems and inside a container alike, and it binds `127.0.0.1` and
+never every address, because it runs a computation for whoever asks.
+
+
 ## The model
 
 A process is a YAML file holding a binary tree. The leaves are **tasks**, each

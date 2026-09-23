@@ -15,6 +15,7 @@ mod exact;
 mod num;
 mod pareto;
 mod search;
+mod serve;
 mod state;
 mod tables;
 mod to_prism;
@@ -43,6 +44,7 @@ fn main() {
         "parse" => cmd_parse(&args[1..]),
         "to_prism" => cmd_to_prism(&args[1..]),
         "to_objective" => cmd_to_objective(&args[1..]),
+        "serve" => serve::cmd_serve(&args[1..]),
         "test" => cmd_test(&args[1..]),
         "bound" => cmd_bound(&args[1..]),
         "-h" | "--help" | "help" => {
@@ -68,6 +70,7 @@ sdcpi  on-the-fly strategy synthesis for BPMN+CPI processes
   sdcpi info      <instance>
   sdcpi bound     <instance>
   sdcpi optima    <instance>
+  sdcpi serve     [--port N]
   sdcpi test      [<suite>] [options...]
 
 test runs scripts/<suite>/run.py beside the tree of this executable,
@@ -199,12 +202,12 @@ options for optima
 // arguments
 // ---------------------------------------------------------------------------
 
-struct Args {
+pub(crate) struct Args {
     positional: Vec<String>,
     flags: Vec<(String, String)>,
 }
 
-fn parse_args(args: &[String]) -> Result<Args, String> {
+pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut out = Args {
         positional: Vec::new(),
         flags: Vec::new(),
@@ -232,7 +235,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
 }
 
 impl Args {
-    fn flag(&self, name: &str) -> Option<&str> {
+    pub(crate) fn flag(&self, name: &str) -> Option<&str> {
         self.flags
             .iter()
             .find(|(n, _)| n == name)
@@ -391,7 +394,7 @@ fn vector(text: &str) -> Result<Vec<BVal>, String> {
 // ---------------------------------------------------------------------------
 // commands
 // ---------------------------------------------------------------------------
-fn fail(message: &str) -> i32 {
+pub(crate) fn fail(message: &str) -> i32 {
     eprintln!("sdcpi: {message}");
     2
 }
@@ -632,7 +635,7 @@ fn cmd_to_prism(args: &[String]) -> i32 {
 
 /// The options of the search as the flags give them, shared by determine and
 /// by pareto, which runs one search per query.
-struct SearchOptions {
+pub(crate) struct SearchOptions {
     steal: Steal,
     epsilon: f64,
     workers: usize,
@@ -643,7 +646,7 @@ struct SearchOptions {
 }
 
 impl SearchOptions {
-    fn from_args(args: &Args) -> Result<SearchOptions, String> {
+    pub(crate) fn from_args(args: &Args) -> Result<SearchOptions, String> {
         Ok(SearchOptions {
             steal: match args.flag("steal").map(Steal::parse) {
                 None => Steal::Ring,
@@ -683,7 +686,7 @@ impl SearchOptions {
         })
     }
 
-    fn config<N: Num>(&self, threshold: Vec<N>, record_strategy: bool) -> Config<N> {
+    pub(crate) fn config<N: Num>(&self, threshold: Vec<N>, record_strategy: bool) -> Config<N> {
         Config {
             threshold,
             oracle: None,

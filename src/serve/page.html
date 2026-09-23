@@ -1,0 +1,207 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sdcpi</title>
+<style>
+  :root {
+    --ink: #0b0b0b; --muted: #6e6e6e; --line: #d8d7d3; --bg: #fbfaf7;
+    --panel: #ffffff; --accent: #2a78d6; --warm: #d2802a; --good: #1baf7a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  header { padding: 18px 22px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: 340px 1fr; gap: 0; min-height: calc(100vh - 62px); }
+  form { padding: 18px 22px; border-right: 1px solid var(--line); background: var(--panel); }
+  label { display: block; font-size: 12px; font-weight: 600; margin: 14px 0 5px; letter-spacing: 0.01em; }
+  label:first-of-type { margin-top: 0; }
+  textarea, select, input {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 5px;
+    font: inherit; background: #fff; color: inherit; }
+  textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+             min-height: 120px; resize: vertical; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .hint { color: var(--muted); font-size: 11.5px; margin-top: 4px; }
+  button { margin-top: 18px; width: 100%; padding: 9px; border: 0; border-radius: 5px;
+           background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { background: var(--muted); cursor: default; }
+  section { padding: 18px 22px; overflow: auto; }
+  .status { color: var(--muted); font-size: 13px; }
+  .err { color: #b03a2e; white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace;
+         font-size: 12.5px; background: #fdf0ee; border: 1px solid #f3c9c2; padding: 9px 11px;
+         border-radius: 5px; }
+  .cards { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+          padding: 9px 13px; min-width: 96px; }
+  .card b { display: block; font-size: 19px; font-weight: 600; }
+  .card span { color: var(--muted); font-size: 11.5px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; background: var(--panel); }
+  th, td { text-align: right; padding: 5px 9px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-size: 11.5px; color: var(--muted); font-weight: 600; text-transform: uppercase;
+       letter-spacing: 0.03em; }
+  tr.sel td { background: #eaf2fd; }
+  tbody tr { cursor: pointer; }
+  .strategy { margin-top: 12px; background: var(--panel); border: 1px solid var(--line);
+              border-radius: 6px; padding: 11px 13px; font-size: 13px; }
+  .strategy h3 { margin: 0 0 7px; font-size: 12px; text-transform: uppercase; color: var(--muted);
+                 letter-spacing: 0.03em; }
+  .strategy code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  svg { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  .foot { color: var(--muted); font-size: 11.5px; margin-top: 16px; }
+</style>
+
+<header>
+  <h1>sdcpi</h1>
+  <p>The Pareto frontier of the expected impacts of a BPMN+CPI process, every point with a
+     strategy that attains it. Exact rational arithmetic, no tolerance anywhere.</p>
+</header>
+
+<main>
+<form id="f">
+  <label for="proc">Process</label>
+  <textarea id="proc" spellcheck="false"></textarea>
+  <div class="hint" id="grammar"></div>
+
+  <div class="row">
+    <div>
+      <label for="workers">Workers</label>
+      <select id="workers">
+        <option>1</option><option>2</option><option selected>4</option><option>8</option>
+      </select>
+    </div>
+    <div>
+      <label for="ablation">Early tests</label>
+      <select id="ablation">
+        <option value="both" selected>both</option>
+        <option value="reject">closing only</option>
+        <option value="accept">recording only</option>
+        <option value="none">neither</option>
+      </select>
+    </div>
+  </div>
+
+  <label for="limit">Time limit, seconds</label>
+  <input id="limit" type="number" min="1" max="600" step="1" value="30">
+  <div class="hint">A search cut at the limit returns the points it had found, which are
+    candidates and not yet verified optima.</div>
+
+  <button id="go" type="submit">Compute the frontier</button>
+</form>
+
+<section>
+  <div id="out"><p class="status">Paste a process and press the button.</p></div>
+</section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let LAST = null;
+
+fetch('/api/hello').then(r => r.json()).then(h => {
+  $('grammar').textContent = h.grammar || '';
+  if (h.example) $('proc').value = h.example;
+}).catch(() => {});
+
+$('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('go').disabled = true;
+  $('out').innerHTML = '<p class="status">Searching…</p>';
+  const body = new URLSearchParams({
+    process: $('proc').value,
+    workers: $('workers').value,
+    ablation: $('ablation').value,
+    limit: $('limit').value,
+  });
+  try {
+    const r = await fetch('/api/frontier', { method: 'POST', body });
+    const d = await r.json();
+    if (d.error) { $('out').innerHTML = '<div class="err"></div>';
+                   $('out').firstChild.textContent = d.error; }
+    else { LAST = d; render(d); }
+  } catch (err) {
+    $('out').innerHTML = '<div class="err"></div>';
+    $('out').firstChild.textContent = String(err);
+  }
+  $('go').disabled = false;
+});
+
+function render(d) {
+  const k = d.components.length;
+  const cards = `<div class="cards">
+    <div class="card"><b>${d.points.length}</b><span>points</span></div>
+    <div class="card"><b>${d.seconds.toFixed(3)} s</b><span>${d.status}</span></div>
+    <div class="card"><b>${d.apexes}</b><span>apexes recorded</span></div>
+    <div class="card"><b>${d.expanded}</b><span>nodes expanded</span></div>
+  </div>`;
+  const head = '<tr><th>#</th>' + d.components.map(c => `<th>impact ${c}</th>`).join('')
+             + '<th>decisions</th></tr>';
+  const rows = d.points.map((p, i) =>
+    `<tr data-i="${i}"><td>${i + 1}</td>`
+    + p.approx.map(v => `<td>${v}</td>`).join('')
+    + `<td>${p.decisions.length}</td></tr>`).join('');
+  const plot = k >= 2 ? svg(d) : '';
+  $('out').innerHTML = cards + plot
+    + `<table><thead>${head}</thead><tbody>${rows}</tbody></table>`
+    + `<div class="strategy" id="str"><h3>Strategy</h3>
+         <p class="status">Choose a point to see the strategy that attains it.</p></div>`
+    + `<p class="foot">${d.note || ''}</p>`;
+  $('out').querySelectorAll('tbody tr').forEach(tr => {
+    tr.addEventListener('click', () => select(+tr.dataset.i));
+  });
+  if (d.points.length) select(0);
+}
+
+function select(i) {
+  const p = LAST.points[i];
+  $('out').querySelectorAll('tbody tr').forEach(tr =>
+    tr.classList.toggle('sel', +tr.dataset.i === i));
+  document.querySelectorAll('svg circle').forEach(c =>
+    c.setAttribute('r', +c.dataset.i === i ? 5 : 3));
+  const lines = p.decisions.length
+    ? p.decisions.map(d => `<div><code>${d}</code></div>`).join('')
+    : '<p class="status">No choice of the controller is decided on this branch.</p>';
+  $('str').innerHTML = `<h3>Strategy of point ${i + 1}</h3>`
+    + `<div style="margin-bottom:7px"><code>${p.value.join(' , ')}</code></div>` + lines;
+}
+
+function svg(d) {
+  const P = d.points.map(p => [p.approx[0], p.approx[1]]);
+  const W = 460, H = 280, M = { l: 52, r: 18, t: 14, b: 38 };
+  const xs = P.map(p => p[0]), ys = P.map(p => p[1]);
+  const pad = (a) => { const lo = Math.min(...a), hi = Math.max(...a);
+                       const d = (hi - lo) || Math.abs(hi) || 1; return [lo - d * 0.12, hi + d * 0.12]; };
+  const [x0, x1] = pad(xs), [y0, y1] = pad(ys);
+  const X = (v) => M.l + (v - x0) / (x1 - x0) * (W - M.l - M.r);
+  const Y = (v) => H - M.b - (v - y0) / (y1 - y0) * (H - M.t - M.b);
+  const tick = (lo, hi) => [lo, (lo + hi) / 2, hi].map(v => +v.toFixed(3));
+  let g = '';
+  for (const v of tick(x0, x1))
+    g += `<line x1="${X(v)}" y1="${M.t}" x2="${X(v)}" y2="${H - M.b}" stroke="#eeede9"/>`
+       + `<text x="${X(v)}" y="${H - M.b + 15}" font-size="11" fill="#6e6e6e" text-anchor="middle">${v}</text>`;
+  for (const v of tick(y0, y1))
+    g += `<line x1="${M.l}" y1="${Y(v)}" x2="${W - M.r}" y2="${Y(v)}" stroke="#eeede9"/>`
+       + `<text x="${M.l - 7}" y="${Y(v) + 4}" font-size="11" fill="#6e6e6e" text-anchor="end">${v}</text>`;
+  const sorted = P.map((p, i) => [p, i]).sort((a, b) => a[0][0] - b[0][0]);
+  let path = '';
+  for (let j = 0; j < sorted.length; j++) {
+    const [p] = sorted[j];
+    path += (j === 0 ? `M ${X(p[0])} ${Y(p[1])}` : ` L ${X(p[0])} ${Y(sorted[j - 1][0][1])} L ${X(p[0])} ${Y(p[1])}`);
+  }
+  const dots = sorted.map(([p, i]) =>
+    `<circle data-i="${i}" cx="${X(p[0])}" cy="${Y(p[1])}" r="3" fill="#2a78d6"/>`).join('');
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+    ${g}
+    <path d="${path}" fill="none" stroke="#2a78d6" stroke-width="1.2"
+          stroke-dasharray="3 2" opacity="0.6"/>
+    ${dots}
+    <line x1="${M.l}" y1="${H - M.b}" x2="${W - M.r}" y2="${H - M.b}" stroke="#52514e"/>
+    <line x1="${M.l}" y1="${M.t}" x2="${M.l}" y2="${H - M.b}" stroke="#52514e"/>
+    <text x="${(M.l + W - M.r) / 2}" y="${H - 6}" font-size="11" fill="#0b0b0b"
+          text-anchor="middle">impact ${d.components[0]}</text>
+    <text x="14" y="${(M.t + H - M.b) / 2}" font-size="11" fill="#0b0b0b" text-anchor="middle"
+          transform="rotate(-90 14 ${(M.t + H - M.b) / 2})">impact ${d.components[1]}</text>
+  </svg>`;
+}
+</script>
