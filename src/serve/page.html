@@ -59,12 +59,18 @@
           padding: 9px 13px; min-width: 96px; }
   .card b { display: block; font-size: 19px; font-weight: 600; }
   .card span { color: var(--muted); font-size: 11.5px; }
+  /* the points in a box that scrolls, the strategy of the chosen one above it */
+  .tablebox { max-height: 340px; overflow: auto; border: 1px solid var(--line); border-radius: 6px;
+              background: var(--panel); margin-top: 12px; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; background: var(--panel); }
+  thead th { position: sticky; top: 0; background: var(--panel); z-index: 1;
+             box-shadow: 0 1px 0 var(--line); }
   th, td { text-align: right; padding: 5px 9px; border-bottom: 1px solid var(--line); }
   th:first-child, td:first-child { text-align: left; }
   th { font-size: 11.5px; color: var(--muted); font-weight: 600; text-transform: uppercase;
        letter-spacing: 0.03em; }
   tr.sel td { background: #eaf2fd; }
+  tr.prov td { color: var(--muted); font-style: italic; }
   tbody tr { cursor: pointer; }
   .strategy { margin-top: 12px; background: var(--panel); border: 1px solid var(--line);
               border-radius: 6px; padding: 11px 13px; font-size: 13px; }
@@ -380,19 +386,21 @@ function render(d) {
     <div class="card"><b>${d.expanded}</b><span>nodes expanded</span></div>
   </div>`;
   const names = d_names(d), order = d_order(d);
+  const cut = d.points.some(p => p.certified === false);
   const head = '<tr><th>#</th>' + order.map(j => `<th>${h(names[j])}</th>`).join('')
-             + '<th>decisions</th></tr>';
+             + '<th>decisions</th>' + (cut ? '<th>final</th>' : '') + '</tr>';
   const rows = d.points.map((p, i) =>
-    `<tr data-i="${i}"><td>${i + 1}</td>`
+    `<tr data-i="${i}" class="${p.certified === false ? 'prov' : ''}"><td>${i + 1}</td>`
     + order.map(j => `<td>${p.approx[j]}</td>`).join('')
-    + `<td>${p.steps.length}</td></tr>`).join('');
+    + `<td>${p.steps.length}</td>`
+    + (cut ? `<td>${p.certified === false ? 'provisional' : 'yes'}</td>` : '') + `</tr>`).join('');
   // two impacts are a staircase in the plane; three or more are parallel
   // coordinates, one axis per impact, a line per point, however many
   const plot = k === 2 ? svg(d) : k >= 3 ? parallel(d) : '';
   $('out').innerHTML = cards + plot
-    + `<table><thead>${head}</thead><tbody>${rows}</tbody></table>`
     + `<div class="strategy" id="str"><h3>Strategy</h3>
          <p class="status">Choose a point to see the strategy that attains it.</p></div>`
+    + `<div class="tablebox"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div>`
     + `<p class="foot">${d.note || ''}</p>`;
   $('out').querySelectorAll('tbody tr').forEach(tr => {
     tr.addEventListener('click', () => select(+tr.dataset.i));
@@ -429,12 +437,16 @@ function sentence(st) {
 function select(i) {
   SELECTED = i;
   const p = LAST.points[i];
-  $('out').querySelectorAll('tbody tr').forEach(tr =>
-    tr.classList.toggle('sel', +tr.dataset.i === i));
+  $('out').querySelectorAll('tbody tr').forEach(tr => {
+    const on = +tr.dataset.i === i;
+    tr.classList.toggle('sel', on);
+    if (on) tr.scrollIntoView({ block: 'nearest' });
+  });
   document.querySelectorAll('svg circle[data-i]').forEach(c => {
-    const on = +c.dataset.i === i;
+    const on = +c.dataset.i === i, prov = LAST.points[+c.dataset.i].certified === false;
     c.setAttribute('r', on ? 5.5 : 3);
-    c.setAttribute('fill', on ? '#d0342c' : '#2a78d6');
+    c.setAttribute('fill', on ? (prov ? '#fff' : '#d0342c') : (prov ? '#fff' : '#2a78d6'));
+    c.setAttribute('stroke', on ? '#d0342c' : '#2a78d6');
   });
   document.querySelectorAll('svg polyline[data-i]').forEach(l => {
     const on = +l.dataset.i === i;
@@ -481,7 +493,8 @@ function parallel(d) {
   }
   const lines = d.points.map((p, i) => {
     const pts = order.map((oj, j) => `${X(j)},${Y(j, p.approx[oj])}`).join(' ');
-    return `<polyline data-i="${i}" class="pc" points="${pts}"/>`
+    const dash = p.certified === false ? ' stroke-dasharray="5 4"' : '';
+    return `<polyline data-i="${i}" class="pc" points="${pts}"${dash}/>`
          + `<polyline data-hit="${i}" points="${pts}" fill="none" stroke="transparent" stroke-width="10" style="cursor:pointer"/>`;
   }).join('');
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:100%;height:auto">
@@ -514,8 +527,11 @@ function svg(d) {
     const [p] = sorted[j];
     path += (j === 0 ? `M ${X(p[0])} ${Y(p[1])}` : ` L ${X(p[0])} ${Y(sorted[j - 1][0][1])} L ${X(p[0])} ${Y(p[1])}`);
   }
-  const dots = sorted.map(([p, i]) =>
-    `<circle data-i="${i}" cx="${X(p[0])}" cy="${Y(p[1])}" r="3" fill="#2a78d6"/>`).join('');
+  const dots = sorted.map(([p, i]) => {
+    const prov = d.points[i].certified === false;
+    return `<circle data-i="${i}" cx="${X(p[0])}" cy="${Y(p[1])}" r="3" fill="${prov ? '#fff' : '#2a78d6'}"`
+         + ` stroke="#2a78d6" stroke-width="1.4"${prov ? ' stroke-dasharray="2 1.5"' : ''}/>`;
+  }).join('');
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
     ${g}
     <path d="${path}" fill="none" stroke="#2a78d6" stroke-width="1.2"

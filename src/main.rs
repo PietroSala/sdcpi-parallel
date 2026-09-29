@@ -881,7 +881,7 @@ fn run_determine<N: Num>(
         match &answer {
             Answer::Yes(_) => "yes",
             Answer::No(_) => "no",
-            Answer::Timeout => "timeout",
+            Answer::Timeout(_) => "timeout",
             Answer::Failed(_) => "failed",
         }
     );
@@ -903,7 +903,7 @@ fn run_determine<N: Num>(
         match &answer {
             Answer::Yes(_) => "1 strategy found",
             Answer::No(_) => "0 strategy not found",
-            Answer::Timeout => "- timed out, no answer",
+            Answer::Timeout(_) => "- timed out, no answer",
             Answer::Failed(_) => "- failed, no answer",
         }
     );
@@ -1099,6 +1099,14 @@ fn cmd_pareto(args: &[String]) -> i32 {
     println!("obdd peak size {}", report.max_size);
     println!("expanded       {}", report.search.expanded);
     println!("points         {}", report.points.len());
+    if matches!(report.status, pareto::Status::Timeout) {
+        println!(
+            "certified      {} of {} points are final, {} open lower bounds at the cut",
+            report.certified_points,
+            report.points.len(),
+            report.open_bounds
+        );
+    }
     for (i, p) in report.points.iter().enumerate() {
         println!("point {:<9}{}", i + 1, dec(&p.value));
         println!("  exact        {}", rat(&p.value));
@@ -1110,6 +1118,9 @@ fn cmd_pareto(args: &[String]) -> i32 {
                 pareto::Origin::Query(n) => format!("query {n}"),
             }
         );
+        if matches!(report.status, pareto::Status::Timeout) {
+            println!("  final        {}", if p.certified { "yes" } else { "no, provisional" });
+        }
         match &p.witness {
             Some(w) => {
                 println!(
@@ -1204,6 +1215,8 @@ fn json_report(tree: &Tree, r: &pareto::Report, elapsed: Duration, decisions: bo
     o.push_str(&format!("  \"accepts\": {},\n", r.accepts));
     o.push_str(&format!("  \"fails\": {},\n", r.fails));
     o.push_str(&format!("  \"witness_runs\": {},\n", r.witness_queries));
+    o.push_str(&format!("  \"open_bounds\": {},\n", r.open_bounds));
+    o.push_str(&format!("  \"certified_points\": {},\n", r.certified_points));
     o.push_str(&format!("  \"certified_refusals\": {},\n", r.certified));
     o.push_str(&format!("  \"certificate_vectors\": {},\n", r.cert_vectors));
     o.push_str(&format!("  \"seconds\": {:.6},\n", elapsed.as_secs_f64()));
@@ -1222,6 +1235,7 @@ fn json_report(tree: &Tree, r: &pareto::Report, elapsed: Duration, decisions: bo
         let approx: Vec<String> = p.value.iter().map(|v| format!("{:.9}", pareto::approx(v))).collect();
         o.push_str("    {\n");
         o.push_str(&format!("      \"value\": {},\n", strs(&p.value)));
+        o.push_str(&format!("      \"certified\": {},\n", p.certified));
         o.push_str(&format!("      \"approx\": [{}],\n", approx.join(", ")));
         o.push_str(&format!(
             "      \"origin\": {},\n",

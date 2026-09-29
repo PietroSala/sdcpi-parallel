@@ -605,17 +605,24 @@ fn frontier(body: &str) -> String {
                 .collect(),
         };
         points.push(format!(
-            "{{\"value\": [{}], \"approx\": [{}], \"steps\": [{}]}}",
+            "{{\"value\": [{}], \"approx\": [{}], \"certified\": {}, \"steps\": [{}]}}",
             value.join(", "),
             approx.join(", "),
+            p.certified,
             steps.join(", ")
         ));
     }
     let note = if matches!(report.status, pareto::Status::Timeout) {
-        "The search was cut at the limit, so these points are candidates: they are minimal \
-         among what had been found, and a longer run may replace them."
+        format!(
+            "The search was cut at the limit. {} of the {} points are final, no open branch \
+             being able to beat them; the others are provisional, a longer run may replace them, \
+             and the frontier may hold points not found yet.",
+            report.certified_points,
+            report.points.len()
+        )
     } else {
         "The search finished, so every point is an optimum and the set is the whole frontier."
+            .to_string()
     };
     format!(
         "{{\"status\": {}, \"seconds\": {:.6}, \"components\": [{}], \"names\": [{}], \"apexes\": {}, \
@@ -626,7 +633,7 @@ fn frontier(body: &str) -> String {
         names.join(", "),
         report.accepts,
         report.search.expanded,
-        esc(note),
+        esc(&note),
         points.join(", ")
     )
 }

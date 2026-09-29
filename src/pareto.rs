@@ -714,6 +714,11 @@ pub struct Point {
     pub ticks: Vec<BigUint>,
     pub origin: Origin,
     pub witness: Option<Witness>,
+    /// Whether the point is a point of the whole frontier for certain: always
+    /// when the search ended, and after a cut when no lower bound of an open
+    /// node lies below it, in one phase, or no unknown budget lies below it,
+    /// in two.
+    pub certified: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -731,6 +736,10 @@ pub struct Report {
     /// closed on them.
     pub oracle_reads: usize,
     pub oracle_pruned: usize,
+    /// After a cut: the lower bounds of the open nodes, in one phase, that
+    /// certify the points below none of them; and how many points are.
+    pub open_bounds: usize,
+    pub certified_points: usize,
     pub extract: Extract,
     pub certificates: Certificates,
     /// Which of the two early tests the search made, the record being unable
@@ -936,6 +945,7 @@ impl<O: Obdd> FrontierOracle<Exact> for Oracle<O> {
                 histories: strategy.histories,
                 open: strategy.frontier_size,
             }),
+            certified: true,
         });
     }
 }
@@ -1004,6 +1014,7 @@ impl FrontierOracle<Exact> for Antichain {
                 histories: strategy.histories,
                 open: strategy.frontier_size,
             }),
+            certified: true,
         });
     }
 }
@@ -1092,10 +1103,10 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     if let Some(handle) = beat {
         let _ = handle.join();
     }
-    let status = match answer {
-        Answer::Timeout => Status::Timeout,
-        Answer::Failed(e) => Status::Failed(e),
-        _ => Status::Complete,
+    let (status, open) = match answer {
+        Answer::Timeout(open) => (Status::Timeout, open),
+        Answer::Failed(e) => (Status::Failed(e), Vec::new()),
+        _ => (Status::Complete, Vec::new()),
     };
     let (apexes, reads, pruned, sol_size) = match opts.oracle {
         OracleKind::Obdd => (
@@ -1129,6 +1140,17 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         components.iter().map(|&c| p.value[c].clone()).collect()
     };
     minimal.sort_by(|a, b| proj(a).cmp(&proj(b)));
+    // after a cut a point is final when no open lower bound lies below it on
+    // the components of the frontier: a hidden value that dominated it would
+    // pass through an open node whose lower bound lies below it
+    if matches!(status, Status::Timeout) {
+        for p in minimal.iter_mut() {
+            p.certified = !open
+                .iter()
+                .any(|v| components.iter().all(|&c| v[c].0 <= p.value[c]));
+        }
+    }
+    let certified_points = minimal.iter().filter(|p| p.certified).count();
     if let Some(sink) = &opts.anytime {
         sink.minimal(minimal.len());
     }
@@ -1139,6 +1161,8 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         oracle: opts.oracle,
         oracle_reads: reads,
         oracle_pruned: pruned,
+        open_bounds: open.len(),
+        certified_points,
         extract: opts.extract,
         certificates: opts.certificates,
         ablation: opts.search.ablation,
@@ -1280,6 +1304,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         ticks: zero.clone(),
         origin: Origin::Upper,
         witness: None,
+        certified: true,
     }];
     let mut sol = grid.cone_above(&o, &zero);
     for i in 0..k {
@@ -1292,6 +1317,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
             ticks: ta.clone(),
             origin: Origin::Axis(i),
             witness: None,
+            certified: true,
         });
         sol = o.or(&sol, &grid.cone_above(&o, &ta));
     }
@@ -1377,6 +1403,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                         histories: strategy.histories,
                         open: strategy.frontier_size,
                     }),
+                    certified: true,
                 });
             }
             Answer::No(cert) => {
@@ -1451,7 +1478,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                     merge_time += tm.elapsed();
                 }
             }
-            Answer::Timeout => {
+            Answer::Timeout(_) => {
                 status = Status::Timeout;
                 obdd_time += t2.elapsed();
                 break;
@@ -1510,6 +1537,15 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         components.iter().map(|&c| p.value[c].clone()).collect()
     };
     minimal.sort_by(|a, b| proj(a).cmp(&proj(b)));
+    // after a cut a point is final when no unknown budget lies below it: a
+    // hidden point of the frontier that dominated it would be such a budget
+    if matches!(status, Status::Timeout) {
+        for p in minimal.iter_mut() {
+            let below = grid.cone_below(&o, &p.ticks);
+            p.certified = !o.is_sat(&o.and(&unknown, &below));
+        }
+    }
+    let certified_points = minimal.iter().filter(|p| p.certified).count();
 
     Ok(Report {
         library: o.name(),
@@ -1517,6 +1553,8 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         oracle: opts.oracle,
         oracle_reads: 0,
         oracle_pruned: 0,
+        open_bounds: 0,
+        certified_points,
         extract: opts.extract,
         certificates: opts.certificates,
         ablation: opts.search.ablation,

@@ -338,7 +338,11 @@ pub enum Answer<N: Num> {
     /// Pareto-minimal rejecting sums over the leaves of the tree, so that a
     /// budget below every one of them is infeasible as well.
     No(Vec<Vec<N>>),
-    Timeout,
+    /// The time ran out. In the frontier search the vector carries the
+    /// certificate of the cut: the Pareto-minimal lower bounds of the nodes
+    /// still open, every strategy not yet accounted for paying at least one
+    /// of them, so that a point below none of them is final.
+    Timeout(Vec<Vec<N>>),
     Failed(String),
 }
 
@@ -406,6 +410,8 @@ struct Shared<'a, N: Num> {
     stop: AtomicBool,
     result: Mutex<Option<Answer<N>>>,
     certificate: Mutex<Vec<Vec<N>>>,
+    /// The lower bounds of the nodes the workers held when the time ran out.
+    open: Mutex<Vec<Vec<N>>>,
     idle: Mutex<usize>,
     wake: Condvar,
     /// How many workers are inside `wait`. A push has to wake somebody only when
@@ -501,7 +507,7 @@ impl<'a, N: Num> Shared<'a, N> {
                         *idle -= 1;
                         self.sleepers.store(*idle, Ordering::Release);
                         drop(idle);
-                        self.finish(Answer::Timeout);
+                        self.finish(Answer::Timeout(Vec::new()));
                         return false;
                     }
                 }
@@ -620,17 +626,43 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
             }
         }
     };
+    // What a worker leaves open when the search is cut: the node in hand and
+    // the nodes on its local stack, each by its lower bound, so that the cut
+    // comes with its certificate. Read only in the frontier search.
+    let abandon = |shared: &Shared<'a, N>, node: &CtNode<'a, N>, local: &VecDeque<CtNode<'a, N>>| {
+        if shared.cfg.oracle.is_none() {
+            return;
+        }
+        let mut mine: Vec<Vec<N>> = Vec::new();
+        let mut sum = zeros::<N>(k);
+        node.frontier.rejecting(&mut sum);
+        insert_minimal(&mut mine, sum.clone());
+        for n in local {
+            n.frontier.rejecting(&mut sum);
+            insert_minimal(&mut mine, sum.clone());
+        }
+        let mut all = shared.open.lock().unwrap();
+        for v in mine {
+            insert_minimal(&mut all, v);
+        }
+    };
     loop {
         if shared.stop.load(Ordering::Relaxed) {
+            abandon(shared, &node, &local);
             publish(shared, expanded_here, peak_here, &mut cert);
             return;
         }
         expanded_here += 1;
-        if expanded_here % 4096 == 0 {
+        // the clock is read every sixty-four expansions: a search on floats
+        // expands a million nodes a second and reads it fifteen thousand
+        // times, which is nothing, and a search on rationals expands a few
+        // hundred and would otherwise never read it before it is over
+        if expanded_here % 64 == 0 {
             if let Some(d) = shared.deadline {
                 if Instant::now() >= d {
+                    abandon(shared, &node, &local);
                     publish(shared, expanded_here, peak_here, &mut cert);
-                    shared.finish(Answer::Timeout);
+                    shared.finish(Answer::Timeout(Vec::new()));
                     return;
                 }
             }
@@ -827,6 +859,7 @@ fn search_in<'a, N: Num>(tree: &'a Tree, records: &'a Records<'a, N>, cfg: Confi
         stop: AtomicBool::new(false),
         result: Mutex::new(None),
         certificate: Mutex::new(Vec::new()),
+        open: Mutex::new(Vec::new()),
         idle: Mutex::new(0),
         wake: Condvar::new(),
         sleepers: AtomicUsize::new(0),
@@ -849,6 +882,21 @@ fn search_in<'a, N: Num>(tree: &'a Tree, records: &'a Records<'a, N>, cfg: Confi
     let answer = match shared.result.lock().unwrap().take() {
         Some(Answer::No(_)) | None => {
             Answer::No(std::mem::take(&mut *shared.certificate.lock().unwrap()))
+        }
+        Some(Answer::Timeout(_)) => {
+            // the certificate of the cut: what the workers abandoned, and
+            // what is still on the stacks nobody took
+            let mut open = std::mem::take(&mut *shared.open.lock().unwrap());
+            if shared.cfg.oracle.is_some() {
+                let mut sum = zeros::<N>(tree.k);
+                for stack in &shared.stacks {
+                    for node in stack.items.lock().unwrap().iter() {
+                        node.frontier.rejecting(&mut sum);
+                        insert_minimal(&mut open, sum.clone());
+                    }
+                }
+            }
+            Answer::Timeout(open)
         }
         Some(a) => a,
     };
