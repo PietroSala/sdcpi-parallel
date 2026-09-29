@@ -6,13 +6,16 @@
 //! nothing that is not already there, the three desktop systems come for
 //! free, and a container needs one port.
 //!
-//! The server is written here rather than taken from a crate. It answers one
-//! client at a time on the loopback address, serves one page held as a
-//! constant and one endpoint, and runs the search in this process rather than
-//! shelling out to itself. A hundred and fifty lines of `TcpListener` are
-//! enough for that, and the whole of what makes a web server hard, the
-//! concurrency, the routing, the static files, the sessions, is absent by
-//! construction.
+//! The server is written here rather than taken from a crate. It answers on
+//! the loopback address, serves one page held as a constant and a few
+//! endpoints, and runs the search in this process rather than shelling out to
+//! itself. Every connection gets a thread of its own, so that a browser
+//! holding a connection open and silent, or a search of half a minute, does
+//! not keep the drawing of the diagram waiting; the searches themselves run
+//! one at a time, behind a lock, the search being what takes the processors.
+//! A hundred and fifty lines of `TcpListener` are enough for that, and the
+//! whole of what makes a web server hard, the routing, the static files, the
+//! sessions, is absent by construction.
 //!
 //! What guards it, since it runs a computation on request:
 //!   * it binds `127.0.0.1` and never `0.0.0.0`, so nothing outside the
@@ -34,6 +37,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::num::Exact;
@@ -123,14 +127,22 @@ pub fn cmd_serve(args: &[String]) -> i32 {
     } else {
         println!("benchmark instances: none found, the loading panel is hidden");
     }
+    let bench = Arc::new(bench);
     for stream in listener.incoming() {
         match stream {
-            Ok(s) => serve_one(s, &bench),
+            Ok(s) => {
+                let bench = bench.clone();
+                std::thread::spawn(move || serve_one(s, &bench));
+            }
             Err(e) => eprintln!("connection refused itself: {e}"),
         }
     }
     0
 }
+
+/// One search at a time: two searches at once would share the processors
+/// and both would report a time neither would have taken alone.
+static SEARCH: Mutex<()> = Mutex::new(());
 
 fn serve_one(mut stream: TcpStream, bench: &Bench) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
@@ -539,6 +551,7 @@ fn frontier(body: &str) -> String {
         Err(e) => return err(&e),
     };
 
+    let _one_at_a_time = SEARCH.lock().unwrap_or_else(|e| e.into_inner());
     let started = Instant::now();
     let report = pareto::frontier(
         &tree,
