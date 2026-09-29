@@ -478,7 +478,8 @@ fn diagram(body: &str) -> String {
     } else {
         None
     };
-    let style = crate::svg::Style { detailed, tooltips, bars };
+    let clocks = matches!(field(body, "clocks").as_deref(), Some("1") | Some("true"));
+    let style = crate::svg::Style { detailed, tooltips, bars, clocks };
     let listed: Vec<String> = order.iter().map(|&j| esc(&names[j])).collect();
     format!(
         "{{\"svg\": {}, \"impacts\": [{}]}}",

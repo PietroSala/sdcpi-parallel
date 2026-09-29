@@ -45,7 +45,12 @@ pub struct Style {
     /// order, every bar against the greatest value of its impact over the
     /// tasks of the process; the values go to the tooltip.
     pub bars: Option<Vec<usize>>,
+    /// The duration of a task as a clock in the corner of its box, the disc
+    /// filled by the duration against the longest of the process, whole for
+    /// the longest; the number goes to the tooltip.
+    pub clocks: bool,
 }
+const CLOCK_R: f64 = 7.0;
 
 /// The colour of a bar is its heat: the value against the greatest value of
 /// its impact over the process, from a cold blue through yellow to a fire
@@ -72,6 +77,8 @@ struct Sizes {
     style: Style,
     /// The greatest value of every impact over the tasks, for the bars.
     maxes: Vec<f64>,
+    /// The longest duration over the tasks, for the clocks.
+    longest: i16,
 }
 
 impl Sizes {
@@ -89,11 +96,21 @@ fn task_box_lines(tree: &Tree, id: u32, s: &Sizes) -> (Vec<(&'static str, String
     if s.style.detailed {
         lines.push(("detail id", format!("id {id}")));
     }
-    lines.push(("detail", duration));
+    if !s.style.clocks {
+        lines.push(("detail", duration.clone()));
+    }
     if !s.style.tooltips && s.style.bars.is_none() {
         lines.push(("detail", impacts.clone()));
     }
-    (lines, impacts)
+    // the tooltip carries what the box does not show
+    let mut tip = Vec::new();
+    if s.style.clocks {
+        tip.push(duration);
+    }
+    if s.style.tooltips || s.style.bars.is_some() {
+        tip.push(if impacts.is_empty() { "no impact".to_string() } else { impacts });
+    }
+    (lines, tip.join(" · "))
 }
 
 /// The height of a task box of `n` lines, and of its bars when it has them.
@@ -194,7 +211,8 @@ fn measure(tree: &Tree, id: u32, s: &mut Sizes) {
                 .iter()
                 .map(|(class, text)| text_w(text, if *class == "name" { 13.0 } else { 11.0 }))
                 .fold(TASK_MIN_W, f64::max)
-                + 24.0;
+                + 24.0
+                + if s.style.clocks { 2.0 * (CLOCK_R + 6.0) } else { 0.0 };
             (w.max(bars_w(s)), task_h(lines.len(), s))
         }
         Kind::Sequence => {
@@ -303,13 +321,10 @@ fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
     let y = y + m;
     match n.kind {
         Kind::Task => {
-            let (lines, impacts) = task_box_lines(tree, id, s);
+            let (lines, tip) = task_box_lines(tree, id, s);
             out.push_str(&format!("<g class=\"task\" data-id=\"{id}\">\n"));
-            if s.style.tooltips || s.style.bars.is_some() {
-                out.push_str(&format!(
-                    "<title>{}</title>\n",
-                    xml(if impacts.is_empty() { "no impact" } else { &impacts })
-                ));
+            if !tip.is_empty() {
+                out.push_str(&format!("<title>{}</title>\n", xml(&tip)));
             }
             out.push_str(&format!(
                 "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"9\" ry=\"9\"/>\n"
@@ -321,6 +336,32 @@ fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
                     y + 20.0 + 15.0 * j as f64,
                     xml(text)
                 ));
+            }
+            if s.style.clocks {
+                // the clock in the top right corner: a disc filled clockwise
+                // from twelve by the duration against the longest
+                let (cx, cy) = (x + w - CLOCK_R - 6.0, y + CLOCK_R + 6.0);
+                let f = if s.longest > 0 {
+                    (n.duration as f64 / s.longest as f64).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                out.push_str(&format!(
+                    "<circle class=\"clock\" cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"{CLOCK_R}\"/>\n"
+                ));
+                if f >= 1.0 {
+                    out.push_str(&format!(
+                        "<circle class=\"hand\" cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"{CLOCK_R}\"/>\n"
+                    ));
+                } else if f > 0.0 {
+                    let a = f * std::f64::consts::TAU;
+                    let (ex, ey) = (cx + CLOCK_R * a.sin(), cy - CLOCK_R * a.cos());
+                    out.push_str(&format!(
+                        "<path class=\"hand\" d=\"M {cx:.1} {cy:.1} L {cx:.1} {:.1} A {CLOCK_R} {CLOCK_R} 0 {} 1 {ex:.1} {ey:.1} Z\"/>\n",
+                        cy - CLOCK_R,
+                        if f > 0.5 { 1 } else { 0 }
+                    ));
+                }
             }
             if let Some(bars) = &s.style.bars {
                 // the bars stand on a baseline near the bottom of the box,
@@ -412,11 +453,13 @@ pub fn render(tree: &Tree, style: &Style) -> String {
             }
         }
     }
+    let longest = tree.tasks.iter().map(|&t| tree.node(t).duration).max().unwrap_or(0);
     let mut s = Sizes {
         w: vec![0.0; n],
         h: vec![0.0; n],
         style: style.clone(),
         maxes,
+        longest,
     };
     measure(tree, tree.root, &mut s);
     let (w, h) = (s.w[tree.root as usize], s.h[tree.root as usize]);
@@ -452,6 +495,8 @@ pub fn render(tree: &Tree, style: &Style) -> String {
          .task .id{{font-family:ui-monospace,Menlo,monospace}}\
          .task .base{{stroke:#c9c8c3;stroke-width:1}}\
          .task .bar{{stroke:none}}\
+         .task .clock{{fill:#fff;stroke:#b9b7b1;stroke-width:1}}\
+         .task .hand{{fill:#2a78d6;stroke:none}}\
          .legend text{{font-size:11px;fill:#0b0b0b}}\
          </style>\n"
     ));

@@ -137,6 +137,9 @@
     the process, blue at nothing and fire red at the greatest; the values stay in the tooltip.
     Choose the impacts drawn.</div>
   <div id="chips" class="chips" hidden></div>
+  <label class="switch" for="clocks"><input id="clocks" type="checkbox"><span class="track"></span><span>Duration as clock</span></label>
+  <div class="hint">The duration of a task as a clock in the corner of its box, the disc filled by the
+    duration against the longest of the process, whole for the longest; the number stays in the tooltip.</div>
 
   <div class="row">
     <div>
@@ -231,6 +234,7 @@ function refreshDiagram() {
                                        detail: $('detail').checked ? '1' : '0',
                                        tooltips: $('tips').checked ? '1' : '0',
                                        bars: $('bars').checked ? '1' : '0',
+                                       clocks: $('clocks').checked ? '1' : '0',
                                        show: shown.join(',') });
     try {
       const r = await fetch('/api/svg', { method: 'POST', body });
@@ -318,6 +322,7 @@ $('detail').addEventListener('change', () => {
 });
 $('tips').addEventListener('change', refreshDiagram);
 $('bars').addEventListener('change', () => { $('chips').hidden = !$('bars').checked; refreshDiagram(); });
+$('clocks').addEventListener('change', refreshDiagram);
 
 // One chip per impact of the process, in alphabetical order, coloured as its
 // bars, checked unless it was unchecked before; the set follows the text.
