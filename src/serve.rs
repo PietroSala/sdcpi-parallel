@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 use crate::num::Exact;
 use crate::pareto;
 use crate::search::Config;
-use crate::tree::Tree;
+use crate::tree::{Kind, Tree};
 use crate::{parse, parse_args, SearchOptions};
 
 const PAGE: &str = include_str!("serve/page.html");
@@ -219,6 +219,16 @@ fn decision(tree: &Tree, history: &[u32], action: u32) -> String {
     }
 }
 
+/// One node as the page reads it: the identifier, the name the sentences
+/// use, and whether the node is a task or a region.
+fn node_json(tree: &Tree, id: u32) -> String {
+    format!(
+        "{{\"id\": {id}, \"name\": {}, \"task\": {}}}",
+        esc(&name_of(tree, id)),
+        tree.node(id).kind == Kind::Task
+    )
+}
+
 /// The name of a node. A task carries its own; an internal node carries none
 /// and takes the name of the first task of its region, which is the task the
 /// run reaches first when that branch is taken, so that a decision reads as a
@@ -399,19 +409,30 @@ fn frontier(body: &str) -> String {
             .iter()
             .map(|v| format!("{:.6}", pareto::approx(v)))
             .collect();
-        let decisions: Vec<String> = match &p.witness {
+        // every decision as data, the point reached and the branch taken,
+        // each node with its identifier, its name and whether it is a task,
+        // so that the page can write the sentence in the words it wants
+        let steps: Vec<String> = match &p.witness {
             None => Vec::new(),
             Some(w) => w
                 .decisions
                 .iter()
-                .map(|(history, action)| esc(&decision(&tree, history, *action)))
+                .map(|(history, action)| {
+                    let after: Vec<String> = history.iter().map(|&id| node_json(&tree, id)).collect();
+                    format!(
+                        "{{\"after\": [{}], \"take\": {}, \"sentence\": {}}}",
+                        after.join(", "),
+                        node_json(&tree, *action),
+                        esc(&decision(&tree, history, *action))
+                    )
+                })
                 .collect(),
         };
         points.push(format!(
-            "{{\"value\": [{}], \"approx\": [{}], \"decisions\": [{}]}}",
+            "{{\"value\": [{}], \"approx\": [{}], \"steps\": [{}]}}",
             value.join(", "),
             approx.join(", "),
-            decisions.join(", ")
+            steps.join(", ")
         ));
     }
     let note = if matches!(report.status, pareto::Status::Timeout) {

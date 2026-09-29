@@ -58,7 +58,8 @@
               border-radius: 6px; padding: 11px 13px; font-size: 13px; }
   .strategy h3 { margin: 0 0 7px; font-size: 12px; text-transform: uppercase; color: var(--muted);
                  letter-spacing: 0.03em; }
-  .strategy code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  .strategy code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted); }
+  .strategy div { padding: 2px 0; }
   svg { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
   #diagram { margin-bottom: 16px; }
   #diagram svg { max-width: 100%; height: auto; display: block; }
@@ -150,7 +151,10 @@ function refreshDiagram() {
   }, 250);
 }
 $('proc').addEventListener('input', refreshDiagram);
-$('detail').addEventListener('change', refreshDiagram);
+$('detail').addEventListener('change', () => {
+  refreshDiagram();
+  if (LAST && SELECTED !== null) select(SELECTED);
+});
 
 $('f').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -188,7 +192,7 @@ function render(d) {
   const rows = d.points.map((p, i) =>
     `<tr data-i="${i}"><td>${i + 1}</td>`
     + p.approx.map(v => `<td>${v}</td>`).join('')
-    + `<td>${p.decisions.length}</td></tr>`).join('');
+    + `<td>${p.steps.length}</td></tr>`).join('');
   const plot = k >= 2 ? svg(d) : '';
   $('out').innerHTML = cards + plot
     + `<table><thead>${head}</thead><tbody>${rows}</tbody></table>`
@@ -202,15 +206,31 @@ function render(d) {
 }
 
 const d_names = (d) => d.names || d.components.map(c => `impact ${c}`);
+const h = (t) => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let SELECTED = null;
+
+// A node in a sentence: its name, or with the detailed regions on, the
+// identifier that the drawing shows, "Mend(5)" for a task and the bare
+// identifier for a region, which is what tells two tasks of one name apart.
+function label(n) {
+  if (!$('detail').checked) return h(n.name);
+  return n.task ? `${h(n.name)}<code>(${n.id})</code>` : `<code>${n.id}</code>`;
+}
+function sentence(st) {
+  return st.after.length
+    ? `once ${st.after.map(label).join(' and ')} is reached, take ${label(st.take)}`
+    : `take ${label(st.take)}`;
+}
 
 function select(i) {
+  SELECTED = i;
   const p = LAST.points[i];
   $('out').querySelectorAll('tbody tr').forEach(tr =>
     tr.classList.toggle('sel', +tr.dataset.i === i));
   document.querySelectorAll('svg circle').forEach(c =>
     c.setAttribute('r', +c.dataset.i === i ? 5 : 3));
-  const lines = p.decisions.length
-    ? p.decisions.map(d => `<div><code>${d}</code></div>`).join('')
+  const lines = p.steps.length
+    ? p.steps.map(st => `<div>${sentence(st)}</div>`).join('')
     : '<p class="status">No choice of the controller is decided on this branch.</p>';
   // the expected impacts of the point, exact, each with its name and, when
   // the exact value is a fraction, its decimal beside it
