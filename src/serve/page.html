@@ -297,8 +297,11 @@ function select(i) {
   const p = LAST.points[i];
   $('out').querySelectorAll('tbody tr').forEach(tr =>
     tr.classList.toggle('sel', +tr.dataset.i === i));
-  document.querySelectorAll('svg circle[data-i]').forEach(c =>
-    c.setAttribute('r', +c.dataset.i === i ? 5 : 3));
+  document.querySelectorAll('svg circle[data-i]').forEach(c => {
+    const on = +c.dataset.i === i;
+    c.setAttribute('r', on ? 5.5 : 3);
+    c.setAttribute('fill', on ? '#d0342c' : '#2a78d6');
+  });
   document.querySelectorAll('svg polyline[data-i]').forEach(l =>
     l.setAttribute('class', +l.dataset.i === i ? 'pc sel' : 'pc'));
   const lines = p.steps.length
@@ -343,7 +346,7 @@ function parallel(d) {
          + `<polyline data-hit="${i}" points="${pts}" fill="none" stroke="transparent" stroke-width="10" style="cursor:pointer"/>`;
   }).join('');
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:100%;height:auto">
-    <style>.pc{fill:none;stroke:#2a78d6;stroke-width:1.2;opacity:.35}.pc.sel{stroke:#1b5cb0;stroke-width:2.6;opacity:1}</style>
+    <style>.pc{fill:none;stroke:#2a78d6;stroke-width:1.2;opacity:.35}.pc.sel{stroke:#d0342c;stroke-width:2.6;opacity:1}</style>
     ${axes}${lines}
   </svg>`;
 }
