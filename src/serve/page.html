@@ -244,10 +244,9 @@ function refreshDiagram() {
                                        bars: $('bars').checked ? '1' : '0',
                                        clocks: $('clocks').checked ? '1' : '0',
                                        names: $('names').checked ? '1' : '0' });
-    // the impacts to draw, once the chips exist; before the first drawing
-    // there are none and every impact is drawn
-    if (chipInputs.length)
-      body.set('show', chipInputs.filter(c => c.checked).map(c => c.value).join(','));
+    // the impacts not to draw, the ones unchecked among the chips: a process
+    // just loaded has names the chips do not know yet, and is drawn whole
+    body.set('hide', chipInputs.filter(c => !c.checked).map(c => c.value).join(','));
     try {
       const r = await fetch('/api/svg', { method: 'POST', body });
       const d = await r.json();

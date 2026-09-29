@@ -468,14 +468,20 @@ fn diagram(body: &str) -> String {
     let names = crate::svg::impact_names(&tree);
     let order = crate::svg::alphabetical(&tree);
     let bars = if matches!(field(body, "bars").as_deref(), Some("1") | Some("true")) {
-        // no list, or an empty one, means every impact: the page has no chips
-        // before its first drawing arrives
-        Some(match field(body, "show").filter(|l| !l.trim().is_empty()) {
-            None => order.clone(),
-            Some(list) => {
+        // the page names the impacts to hide, so that a process just loaded,
+        // whose names the page does not know yet, is drawn whole and a name
+        // hidden before stays hidden if the process still has it; `show`
+        // names the ones to draw instead, and an empty list means all
+        Some(match (field(body, "hide"), field(body, "show").filter(|l| !l.trim().is_empty())) {
+            (Some(hidden), _) => {
+                let hidden: Vec<String> = hidden.split(',').map(|t| t.trim().to_string()).collect();
+                order.iter().copied().filter(|&j| !hidden.contains(&names[j])).collect()
+            }
+            (None, Some(list)) => {
                 let wanted: Vec<String> = list.split(',').map(|t| t.trim().to_string()).collect();
                 order.iter().copied().filter(|&j| wanted.contains(&names[j])).collect()
             }
+            (None, None) => order.clone(),
         })
     } else {
         None
