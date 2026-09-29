@@ -68,7 +68,7 @@ sdcpi  on-the-fly strategy synthesis for BPMN+CPI processes
   sdcpi pareto    <instance> [--precision E] [--obdd-library L] [options]
   sdcpi parse     (<process> | --file F) [--out F]
   sdcpi to_prism  <instance> [--encode-history true|false] [--out F]
-  sdcpi to_svg    <instance> [--out F]
+  sdcpi to_svg    <instance> [--detail true|false] [--out F]
   sdcpi to_objective <instance> (--B a,b,... | --B-file F | --pareto true) [--out F]
   sdcpi info      <instance>
   sdcpi bound     <instance>
@@ -512,7 +512,8 @@ fn cmd_optima(args: &[String]) -> i32 {
         Err(e) => fail(&format!("{e:?}")),
     }
 }
-/// The process as a BPMN diagram, in SVG, to standard output or to --out F.
+/// The process as a BPMN diagram, in SVG, to standard output or to --out F;
+/// --detail true wraps every region in a dashed box with its identifier.
 fn cmd_to_svg(args: &[String]) -> i32 {
     let args = match parse_args(args) {
         Ok(a) => a,
@@ -522,7 +523,12 @@ fn cmd_to_svg(args: &[String]) -> i32 {
         Ok(v) => v,
         Err(e) => return fail(&e),
     };
-    let text = svg::render(&tree);
+    let detailed = match args.flag("detail") {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(v) => return fail(&format!("--detail wants true or false, found {v:?}")),
+    };
+    let text = svg::render(&tree, detailed);
     match args.flag("out") {
         Some(p) => match std::fs::write(p, &text) {
             Ok(()) => 0,

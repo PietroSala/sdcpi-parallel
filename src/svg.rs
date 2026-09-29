@@ -30,10 +30,29 @@ const VGAP: f64 = 20.0;
 /// The radius of the start and end events.
 const EVENT: f64 = 11.0;
 const PAD: f64 = 18.0;
+/// In the detailed drawing, the margin a region keeps around its content,
+/// inside its dashed box, wide enough for the identifier in its corner.
+const REGION_M: f64 = 14.0;
+/// The height of a task box in the detailed drawing, one line more.
+const TASK_H_DETAILED: f64 = 72.0;
 
 struct Sizes {
     w: Vec<f64>,
     h: Vec<f64>,
+    /// The detailed drawing: every region in a dashed box with its
+    /// identifier, and the identifier among the data of every task.
+    detailed: bool,
+}
+
+/// How far inside its box the first and last element of a node sit: the
+/// margin of its dashed box in the detailed drawing, nothing otherwise and
+/// nothing for a task, which has no box around it.
+fn inset(tree: &Tree, id: u32, s: &Sizes) -> f64 {
+    if s.detailed && tree.node(id).kind != Kind::Task {
+        REGION_M
+    } else {
+        0.0
+    }
 }
 
 /// The three lines of a task box: the name, the duration, the impacts that
@@ -80,6 +99,7 @@ fn lead(tree: &Tree, id: u32) -> f64 {
 
 fn measure(tree: &Tree, id: u32, s: &mut Sizes) {
     let n = tree.node(id);
+    let m = if s.detailed { REGION_M } else { 0.0 };
     let (w, h) = match n.kind {
         Kind::Task => {
             let (name, duration, impacts) = task_lines(tree, id);
@@ -87,22 +107,23 @@ fn measure(tree: &Tree, id: u32, s: &mut Sizes) {
                 .into_iter()
                 .fold(TASK_MIN_W, f64::max)
                 + 24.0;
-            (w, TASK_H)
+            (w, if s.detailed { TASK_H_DETAILED } else { TASK_H })
         }
         Kind::Sequence => {
             measure(tree, n.low, s);
             measure(tree, n.high, s);
             (
-                s.w[n.low as usize] + GAP + s.w[n.high as usize],
-                s.h[n.low as usize].max(s.h[n.high as usize]),
+                s.w[n.low as usize] + GAP + s.w[n.high as usize] + 2.0 * m,
+                s.h[n.low as usize].max(s.h[n.high as usize]) + 2.0 * m,
             )
         }
         Kind::Parallel | Kind::Choice | Kind::Nature => {
             measure(tree, n.low, s);
             measure(tree, n.high, s);
             (
-                GW + lead(tree, id) + s.w[n.low as usize].max(s.w[n.high as usize]) + GAP + GW,
-                s.h[n.low as usize] + VGAP + s.h[n.high as usize],
+                GW + lead(tree, id) + s.w[n.low as usize].max(s.w[n.high as usize]) + GAP + GW
+                    + 2.0 * m,
+                s.h[n.low as usize] + VGAP + s.h[n.high as usize] + 2.0 * m,
             )
         }
     };
@@ -167,34 +188,75 @@ fn diamond(out: &mut String, id: u32, role: &str, kind: Kind, cx: f64, cy: f64) 
     out.push_str("</g>\n");
 }
 
+/// The dashed box of a region in the detailed drawing, its identifier in
+/// the corner.
+fn region_box(out: &mut String, id: u32, x: f64, y: f64, w: f64, h: f64) {
+    out.push_str(&format!(
+        "<g class=\"region\" data-id=\"{id}\">\n<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"10\" ry=\"10\"/>\n\
+         <text class=\"rid\" x=\"{:.1}\" y=\"{:.1}\">{id}</text>\n</g>\n",
+        x + 7.0, y + 11.0
+    ));
+}
+
 /// Draws the node in its box, top-left at `(x, y)`, flow line at mid height.
+/// In the detailed drawing the box of a region is its dashed box, and the
+/// content sits inside the margin.
 fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
     let n = tree.node(id);
     let (w, h) = (s.w[id as usize], s.h[id as usize]);
     let ay = y + h / 2.0;
+    let m = inset(tree, id, s);
+    if n.kind != Kind::Task && s.detailed {
+        region_box(out, id, x, y, w, h);
+    }
+    // the content of a region, inside its margin; the flow line is unmoved,
+    // the margin being the same above and below
+    let x = x + m;
+    let y = y + m;
     match n.kind {
         Kind::Task => {
             let (name, duration, impacts) = task_lines(tree, id);
-            out.push_str(&format!(
-                "<g class=\"task\" data-id=\"{id}\">\n<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"9\" ry=\"9\"/>\n\
-                 <text class=\"name\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n\
-                 <text class=\"detail\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n\
-                 <text class=\"detail\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n</g>\n",
-                x + w / 2.0, y + 20.0, xml(&name),
-                x + w / 2.0, y + 36.0, xml(&duration),
-                x + w / 2.0, y + 50.0, xml(&impacts)
-            ));
+            if s.detailed {
+                out.push_str(&format!(
+                    "<g class=\"task\" data-id=\"{id}\">\n<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"9\" ry=\"9\"/>\n\
+                     <text class=\"name\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n\
+                     <text class=\"detail id\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">id {id}</text>\n\
+                     <text class=\"detail\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n\
+                     <text class=\"detail\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n</g>\n",
+                    x + w / 2.0, y + 19.0, xml(&name),
+                    x + w / 2.0, y + 34.0,
+                    x + w / 2.0, y + 49.0, xml(&duration),
+                    x + w / 2.0, y + 63.0, xml(&impacts)
+                ));
+            } else {
+                out.push_str(&format!(
+                    "<g class=\"task\" data-id=\"{id}\">\n<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"9\" ry=\"9\"/>\n\
+                     <text class=\"name\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n\
+                     <text class=\"detail\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n\
+                     <text class=\"detail\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n</g>\n",
+                    x + w / 2.0, y + 20.0, xml(&name),
+                    x + w / 2.0, y + 36.0, xml(&duration),
+                    x + w / 2.0, y + 50.0, xml(&impacts)
+                ));
+            }
         }
         Kind::Sequence => {
             let (wl, hl) = (s.w[n.low as usize], s.h[n.low as usize]);
             let hh = s.h[n.high as usize];
+            let (il, ih) = (inset(tree, n.low, s), inset(tree, n.high, s));
             draw(tree, n.low, x, ay - hl / 2.0, s, out);
-            flow(out, &n.low.to_string(), &n.high.to_string(), &[(x + wl, ay), (x + wl + GAP, ay)]);
+            flow(
+                out,
+                &n.low.to_string(),
+                &n.high.to_string(),
+                &[(x + wl - il, ay), (x + wl + GAP + ih, ay)],
+            );
             draw(tree, n.high, x + wl + GAP, ay - hh / 2.0, s, out);
         }
         Kind::Parallel | Kind::Choice | Kind::Nature => {
             let (wl, hl) = (s.w[n.low as usize], s.h[n.low as usize]);
             let (wh, hh) = (s.w[n.high as usize], s.h[n.high as usize]);
+            let (il, ih) = (inset(tree, n.low, s), inset(tree, n.high, s));
             let cx = x + GW / 2.0; // the split
             let x1 = x + GW + lead(tree, id); // where both branches start
             let jx = x1 + wl.max(wh) + GAP + GW / 2.0; // the join
@@ -204,8 +266,8 @@ fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
             let split = format!("{id}:split");
             let join = format!("{id}:join");
             diamond(out, id, "split", n.kind, cx, ay);
-            flow(out, &split, &n.low.to_string(), &[(cx, ay - r), (cx, ayl), (x1, ayl)]);
-            flow(out, &split, &n.high.to_string(), &[(cx, ay + r), (cx, ayh), (x1, ayh)]);
+            flow(out, &split, &n.low.to_string(), &[(cx, ay - r), (cx, ayl), (x1 + il, ayl)]);
+            flow(out, &split, &n.high.to_string(), &[(cx, ay + r), (cx, ayh), (x1 + ih, ayh)]);
             if n.kind == Kind::Nature {
                 // each probability sits on the connector of its branch, just
                 // above the horizontal run that leads into it
@@ -219,19 +281,22 @@ fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
             }
             draw(tree, n.low, x1, y, s, out);
             draw(tree, n.high, x1, y + hl + VGAP, s, out);
-            flow(out, &n.low.to_string(), &join, &[(x1 + wl, ayl), (jx, ayl), (jx, ay - r)]);
-            flow(out, &n.high.to_string(), &join, &[(x1 + wh, ayh), (jx, ayh), (jx, ay + r)]);
+            flow(out, &n.low.to_string(), &join, &[(x1 + wl - il, ayl), (jx, ayl), (jx, ay - r)]);
+            flow(out, &n.high.to_string(), &join, &[(x1 + wh - ih, ayh), (jx, ayh), (jx, ay + r)]);
             diamond(out, id, "join", n.kind, jx, ay);
         }
     }
 }
 
-/// The diagram of the whole process, start event to end event.
-pub fn render(tree: &Tree) -> String {
+/// The diagram of the whole process, start event to end event. `detailed`
+/// wraps every region in a dashed box with its identifier and writes the
+/// identifier among the data of every task.
+pub fn render(tree: &Tree, detailed: bool) -> String {
     let n = tree.nodes.len();
     let mut s = Sizes {
         w: vec![0.0; n],
         h: vec![0.0; n],
+        detailed,
     };
     measure(tree, tree.root, &mut s);
     let (w, h) = (s.w[tree.root as usize], s.h[tree.root as usize]);
@@ -257,15 +322,19 @@ pub fn render(tree: &Tree) -> String {
          .event{{fill:#fff;stroke:#0b0b0b;stroke-width:1.3}}\
          .event.end{{stroke-width:3.2}}\
          .prob{{font-size:11px;fill:#6e6e6e}}\
+         .region rect{{fill:none;stroke:#9c9a95;stroke-width:1;stroke-dasharray:5 4}}\
+         .region .rid{{font-size:10.5px;fill:#6e6e6e;font-family:ui-monospace,Menlo,monospace}}\
+         .task .id{{font-family:ui-monospace,Menlo,monospace}}\
          </style>\n"
     ));
     out.push_str(&format!(
         "<circle class=\"event start\" cx=\"{:.1}\" cy=\"{ay:.1}\" r=\"{EVENT}\"/>\n",
         PAD + EVENT
     ));
-    flow(&mut out, "start", &tree.root.to_string(), &[(PAD + 2.0 * EVENT, ay), (x0, ay)]);
+    let ir = inset(tree, tree.root, &s);
+    flow(&mut out, "start", &tree.root.to_string(), &[(PAD + 2.0 * EVENT, ay), (x0 + ir, ay)]);
     draw(tree, tree.root, x0, y0, &s, &mut out);
-    flow(&mut out, &tree.root.to_string(), "end", &[(x0 + w, ay), (x0 + w + GAP, ay)]);
+    flow(&mut out, &tree.root.to_string(), "end", &[(x0 + w - ir, ay), (x0 + w + GAP, ay)]);
     out.push_str(&format!(
         "<circle class=\"event end\" cx=\"{:.1}\" cy=\"{ay:.1}\" r=\"{EVENT}\"/>\n</svg>\n",
         x0 + w + GAP + EVENT

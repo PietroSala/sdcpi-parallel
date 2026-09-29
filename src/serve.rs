@@ -301,7 +301,8 @@ fn diagram(body: &str) -> String {
         Ok(t) => t,
         Err(e) => return err(&format!("the instance does not read: {e}")),
     };
-    format!("{{\"svg\": {}}}", esc(&crate::svg::render(&tree)))
+    let detailed = matches!(field(body, "detail").as_deref(), Some("1") | Some("true"));
+    format!("{{\"svg\": {}}}", esc(&crate::svg::render(&tree, detailed)))
 }
 
 /// Runs one search and answers with the frontier, every point with the
