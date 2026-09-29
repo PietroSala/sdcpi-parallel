@@ -463,7 +463,28 @@ fn diagram(body: &str) -> String {
     };
     let detailed = matches!(field(body, "detail").as_deref(), Some("1") | Some("true"));
     let tooltips = matches!(field(body, "tooltips").as_deref(), Some("1") | Some("true"));
-    format!("{{\"svg\": {}}}", esc(&crate::svg::render(&tree, detailed, tooltips)))
+    // the bars: the impacts named in `show`, alphabetical, all of them when
+    // the field is absent
+    let names = crate::svg::impact_names(&tree);
+    let order = crate::svg::alphabetical(&tree);
+    let bars = if matches!(field(body, "bars").as_deref(), Some("1") | Some("true")) {
+        Some(match field(body, "show") {
+            None => order.clone(),
+            Some(list) => {
+                let wanted: Vec<String> = list.split(',').map(|t| t.trim().to_string()).collect();
+                order.iter().copied().filter(|&j| wanted.contains(&names[j])).collect()
+            }
+        })
+    } else {
+        None
+    };
+    let style = crate::svg::Style { detailed, tooltips, bars };
+    let listed: Vec<String> = order.iter().map(|&j| esc(&names[j])).collect();
+    format!(
+        "{{\"svg\": {}, \"impacts\": [{}]}}",
+        esc(&crate::svg::render(&tree, &style)),
+        listed.join(", ")
+    )
 }
 
 /// Runs one search and answers with the frontier, every point with the

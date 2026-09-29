@@ -32,15 +32,52 @@ const PAD: f64 = 18.0;
 /// In the detailed drawing, the margin a region keeps around its content,
 /// inside its dashed box, wide enough for the identifier in its corner.
 const REGION_M: f64 = 14.0;
+/// What the drawing shows of a task beyond its name and duration.
+#[derive(Clone, Debug, Default)]
+pub struct Style {
+    /// Every region in a dashed box with its identifier, and the identifier
+    /// among the data of every task.
+    pub detailed: bool,
+    /// The impacts of a task as a tooltip on its box rather than as a line
+    /// in it, which keeps a box narrow when the impacts are many.
+    pub tooltips: bool,
+    /// The impacts of a task as bars in its box, these components in this
+    /// order, every bar against the greatest value of its impact over the
+    /// tasks of the process; the values go to the tooltip.
+    pub bars: Option<Vec<usize>>,
+}
+
+/// The colour of a bar is its heat: the value against the greatest value of
+/// its impact over the process, from a cold blue through yellow to a fire
+/// red at the maximum. The impact a bar stands for is its place, the bars
+/// keeping the alphabetical order of the names in every box.
+fn heat(t: f64) -> String {
+    let t = t.clamp(0.0, 1.0);
+    let (a, b, u) = if t < 0.5 {
+        ((0x3b, 0x82, 0xf6), (0xf5, 0xc5, 0x42), t * 2.0)
+    } else {
+        ((0xf5, 0xc5, 0x42), (0xe8, 0x23, 0x2a), (t - 0.5) * 2.0)
+    };
+    let mix = |x: u8, y: u8| -> u8 { (x as f64 + (y as f64 - x as f64) * u).round() as u8 };
+    format!("#{:02x}{:02x}{:02x}", mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+}
+const BAR_W: f64 = 9.0;
+const BAR_GAP: f64 = 4.0;
+const BAR_MAX: f64 = 22.0;
+const LEGEND_H: f64 = 22.0;
+
 struct Sizes {
     w: Vec<f64>,
     h: Vec<f64>,
-    /// The detailed drawing: every region in a dashed box with its
-    /// identifier, and the identifier among the data of every task.
-    detailed: bool,
-    /// The impacts of a task as a tooltip on its box rather than as a line
-    /// in it, which keeps a box narrow when the impacts are many.
-    tooltips: bool,
+    style: Style,
+    /// The greatest value of every impact over the tasks, for the bars.
+    maxes: Vec<f64>,
+}
+
+impl Sizes {
+    fn detailed(&self) -> bool {
+        self.style.detailed
+    }
 }
 
 /// The lines of a task box, the name first and in a larger type: the
@@ -49,26 +86,52 @@ struct Sizes {
 fn task_box_lines(tree: &Tree, id: u32, s: &Sizes) -> (Vec<(&'static str, String)>, String) {
     let (name, duration, impacts) = task_lines(tree, id);
     let mut lines: Vec<(&'static str, String)> = vec![("name", name)];
-    if s.detailed {
+    if s.style.detailed {
         lines.push(("detail id", format!("id {id}")));
     }
     lines.push(("detail", duration));
-    if !s.tooltips {
+    if !s.style.tooltips && s.style.bars.is_none() {
         lines.push(("detail", impacts.clone()));
     }
     (lines, impacts)
 }
 
-/// The height of a task box of `n` lines.
-fn task_h(n: usize) -> f64 {
-    16.0 + 14.0 * n as f64
+/// The height of a task box of `n` lines, and of its bars when it has them.
+fn task_h(n: usize, s: &Sizes) -> f64 {
+    16.0 + 14.0 * n as f64 + if s.style.bars.is_some() { BAR_MAX + 8.0 } else { 0.0 }
+}
+
+/// The width the bars of a task need.
+fn bars_w(s: &Sizes) -> f64 {
+    match &s.style.bars {
+        Some(b) if !b.is_empty() => b.len() as f64 * (BAR_W + BAR_GAP) - BAR_GAP + 24.0,
+        _ => 0.0,
+    }
+}
+
+/// The impacts in alphabetical order of their names, as the page shows them.
+pub fn alphabetical(tree: &Tree) -> Vec<usize> {
+    let names = impact_names(tree);
+    let mut order: Vec<usize> = (0..tree.k).collect();
+    order.sort_by(|&a, &b| names[a].cmp(&names[b]));
+    order
+}
+
+/// The names of the impacts, an index where the process gives none.
+pub fn impact_names(tree: &Tree) -> Vec<String> {
+    (0..tree.k)
+        .map(|j| match tree.meta.impact_names.get(j) {
+            Some(n) if !n.is_empty() => n.clone(),
+            _ => format!("impact {j}"),
+        })
+        .collect()
 }
 
 /// How far inside its box the first and last element of a node sit: the
 /// margin of its dashed box in the detailed drawing, nothing otherwise and
 /// nothing for a task, which has no box around it.
 fn inset(tree: &Tree, id: u32, s: &Sizes) -> f64 {
-    if s.detailed && tree.node(id).kind != Kind::Task {
+    if s.detailed() && tree.node(id).kind != Kind::Task {
         REGION_M
     } else {
         0.0
@@ -123,7 +186,7 @@ fn lead(tree: &Tree, id: u32) -> f64 {
 
 fn measure(tree: &Tree, id: u32, s: &mut Sizes) {
     let n = tree.node(id);
-    let m = if s.detailed { REGION_M } else { 0.0 };
+    let m = if s.detailed() { REGION_M } else { 0.0 };
     let (w, h) = match n.kind {
         Kind::Task => {
             let (lines, _) = task_box_lines(tree, id, s);
@@ -132,7 +195,7 @@ fn measure(tree: &Tree, id: u32, s: &mut Sizes) {
                 .map(|(class, text)| text_w(text, if *class == "name" { 13.0 } else { 11.0 }))
                 .fold(TASK_MIN_W, f64::max)
                 + 24.0;
-            (w, task_h(lines.len()))
+            (w.max(bars_w(s)), task_h(lines.len(), s))
         }
         Kind::Sequence => {
             measure(tree, n.low, s);
@@ -231,7 +294,7 @@ fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
     let (w, h) = (s.w[id as usize], s.h[id as usize]);
     let ay = y + h / 2.0;
     let m = inset(tree, id, s);
-    if n.kind != Kind::Task && s.detailed {
+    if n.kind != Kind::Task && s.detailed() {
         region_box(out, id, x, y, w, h);
     }
     // the content of a region, inside its margin; the flow line is unmoved,
@@ -242,7 +305,7 @@ fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
         Kind::Task => {
             let (lines, impacts) = task_box_lines(tree, id, s);
             out.push_str(&format!("<g class=\"task\" data-id=\"{id}\">\n"));
-            if s.tooltips {
+            if s.style.tooltips || s.style.bars.is_some() {
                 out.push_str(&format!(
                     "<title>{}</title>\n",
                     xml(if impacts.is_empty() { "no impact" } else { &impacts })
@@ -258,6 +321,32 @@ fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
                     y + 20.0 + 15.0 * j as f64,
                     xml(text)
                 ));
+            }
+            if let Some(bars) = &s.style.bars {
+                // the bars stand on a baseline near the bottom of the box,
+                // each as tall as its value against the greatest value of
+                // its impact over the process
+                let total = bars.len() as f64 * (BAR_W + BAR_GAP) - BAR_GAP;
+                let base = y + h - 7.0;
+                let x0 = x + (w - total) / 2.0;
+                out.push_str(&format!(
+                    "<line class=\"base\" x1=\"{:.1}\" y1=\"{base:.1}\" x2=\"{:.1}\" y2=\"{base:.1}\"/>\n",
+                    x0 - 3.0, x0 + total + 3.0
+                ));
+                let values = tree.impact(id);
+                for (b, &c) in bars.iter().enumerate() {
+                    let v = values.get(c).copied().unwrap_or(0.0);
+                    let t = if s.maxes[c] > 0.0 { v / s.maxes[c] } else { 0.0 };
+                    let top = t * BAR_MAX;
+                    if top > 0.0 {
+                        out.push_str(&format!(
+                            "<rect class=\"bar\" x=\"{:.1}\" y=\"{:.1}\" width=\"{BAR_W}\" height=\"{top:.1}\" style=\"fill:{}\"/>\n",
+                            x0 + b as f64 * (BAR_W + BAR_GAP),
+                            base - top,
+                            heat(t)
+                        ));
+                    }
+                }
             }
             out.push_str("</g>\n");
         }
@@ -313,21 +402,34 @@ fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
 /// wraps every region in a dashed box with its identifier and writes the
 /// identifier among the data of every task; `tooltips` moves the impacts of
 /// every task from a line in its box to a tooltip on it.
-pub fn render(tree: &Tree, detailed: bool, tooltips: bool) -> String {
+pub fn render(tree: &Tree, style: &Style) -> String {
     let n = tree.nodes.len();
+    let mut maxes = vec![0.0f64; tree.k];
+    for &t in &tree.tasks {
+        for (j, v) in tree.impact(t).iter().enumerate() {
+            if *v > maxes[j] {
+                maxes[j] = *v;
+            }
+        }
+    }
     let mut s = Sizes {
         w: vec![0.0; n],
         h: vec![0.0; n],
-        detailed,
-        tooltips,
+        style: style.clone(),
+        maxes,
     };
     measure(tree, tree.root, &mut s);
     let (w, h) = (s.w[tree.root as usize], s.h[tree.root as usize]);
+    // the legend of the bars takes a band above the drawing
+    let legend_h = match &style.bars {
+        Some(b) if !b.is_empty() => LEGEND_H,
+        _ => 0.0,
+    };
     let x0 = PAD + 2.0 * EVENT + GAP;
-    let y0 = PAD;
+    let y0 = PAD + legend_h;
     let ay = y0 + h / 2.0;
     let total_w = x0 + w + GAP + 2.0 * EVENT + PAD;
-    let total_h = h + 2.0 * PAD;
+    let total_h = h + 2.0 * PAD + legend_h;
     let mut out = String::new();
     out.push_str(&format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{total_w:.0}\" height=\"{total_h:.0}\" \
@@ -348,8 +450,43 @@ pub fn render(tree: &Tree, detailed: bool, tooltips: bool) -> String {
          .region rect{{fill:none;stroke:#9c9a95;stroke-width:1;stroke-dasharray:5 4}}\
          .region .rid{{font-size:10.5px;fill:#6e6e6e;font-family:ui-monospace,Menlo,monospace}}\
          .task .id{{font-family:ui-monospace,Menlo,monospace}}\
+         .task .base{{stroke:#c9c8c3;stroke-width:1}}\
+         .task .bar{{stroke:none}}\
+         .legend text{{font-size:11px;fill:#0b0b0b}}\
          </style>\n"
     ));
+    if let Some(bars) = &style.bars {
+        if !bars.is_empty() {
+            // the legend: the bars left to right by name, and the heat from
+            // nothing to the greatest value of the impact
+            let names = impact_names(tree);
+            let listed: Vec<String> = bars.iter().map(|&c| xml(&names[c])).collect();
+            let text = format!("bars, left to right: {}", listed.join(" · "));
+            out.push_str(&format!(
+                "<g class=\"legend\">\n<text x=\"{PAD:.1}\" y=\"{:.1}\">{text}</text>\n",
+                PAD + 5.0
+            ));
+            let mut lx = PAD + text_w(&text, 11.0) + 22.0;
+            out.push_str(&format!(
+                "<text x=\"{lx:.1}\" y=\"{:.1}\" fill=\"#6e6e6e\">0</text>\n",
+                PAD + 5.0
+            ));
+            lx += 10.0;
+            for i in 0..8 {
+                out.push_str(&format!(
+                    "<rect x=\"{lx:.1}\" y=\"{:.1}\" width=\"9\" height=\"9\" style=\"fill:{}\"/>\n",
+                    PAD - 3.5,
+                    heat(i as f64 / 7.0)
+                ));
+                lx += 9.0;
+            }
+            out.push_str(&format!(
+                "<text x=\"{:.1}\" y=\"{:.1}\" fill=\"#6e6e6e\">greatest of the impact</text>\n</g>\n",
+                lx + 4.0,
+                PAD + 5.0
+            ));
+        }
+    }
     out.push_str(&format!(
         "<circle class=\"event start\" cx=\"{:.1}\" cy=\"{ay:.1}\" r=\"{EVENT}\"/>\n",
         PAD + EVENT
