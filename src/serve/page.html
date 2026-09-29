@@ -384,6 +384,10 @@ function render(d) {
     <div class="card"><b>${d.seconds.toFixed(3)} s</b><span>${d.status}</span></div>
     <div class="card"><b>${d.apexes}</b><span>apexes recorded</span></div>
     <div class="card"><b>${d.expanded}</b><span>nodes expanded</span></div>
+    ${d.points.some(p => p.certified === false)
+      ? `<div class="card"><b>${d.points.filter(p => p.certified).length}</b><span>final points</span></div>
+         <div class="card"><b>${d.points.filter(p => p.certified === false).length}</b><span>provisional</span></div>`
+      : ''}
   </div>`;
   const names = d_names(d), order = d_order(d);
   const cut = d.points.some(p => p.certified === false);
