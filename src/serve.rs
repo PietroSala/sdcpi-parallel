@@ -380,6 +380,16 @@ fn frontier(body: &str) -> String {
         pareto::Status::Failed(_) => "failed",
     };
     let comps: Vec<String> = report.components.iter().map(|c| c.to_string()).collect();
+    // the impacts by the names the process gives them, an index where it
+    // gives none
+    let names: Vec<String> = report
+        .components
+        .iter()
+        .map(|&c| match tree.meta.impact_names.get(c) {
+            Some(n) if !n.is_empty() => esc(n),
+            _ => esc(&format!("impact {c}")),
+        })
+        .collect();
     let mut points = Vec::new();
     for p in &report.points {
         let value: Vec<String> = p.value.iter().map(|v| esc(&v.to_string())).collect();
@@ -410,11 +420,12 @@ fn frontier(body: &str) -> String {
         "The search finished, so every point is an optimum and the set is the whole frontier."
     };
     format!(
-        "{{\"status\": {}, \"seconds\": {:.6}, \"components\": [{}], \"apexes\": {}, \
+        "{{\"status\": {}, \"seconds\": {:.6}, \"components\": [{}], \"names\": [{}], \"apexes\": {}, \
          \"expanded\": {}, \"note\": {}, \"points\": [{}]}}",
         esc(status),
         seconds,
         comps.join(", "),
+        names.join(", "),
         report.accepts,
         report.search.expanded,
         esc(note),
