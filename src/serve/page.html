@@ -328,11 +328,12 @@ function render(d) {
     <div class="card"><b>${d.apexes}</b><span>apexes recorded</span></div>
     <div class="card"><b>${d.expanded}</b><span>nodes expanded</span></div>
   </div>`;
-  const head = '<tr><th>#</th>' + d.names.map(n => `<th>${n}</th>`).join('')
+  const names = d_names(d), order = d_order(d);
+  const head = '<tr><th>#</th>' + order.map(j => `<th>${h(names[j])}</th>`).join('')
              + '<th>decisions</th></tr>';
   const rows = d.points.map((p, i) =>
     `<tr data-i="${i}"><td>${i + 1}</td>`
-    + p.approx.map(v => `<td>${v}</td>`).join('')
+    + order.map(j => `<td>${p.approx[j]}</td>`).join('')
     + `<td>${p.steps.length}</td></tr>`).join('');
   // two impacts are a staircase in the plane; three or more are parallel
   // coordinates, one axis per impact, a line per point, however many
@@ -352,6 +353,12 @@ function render(d) {
 }
 
 const d_names = (d) => d.names || d.components.map(c => `impact ${c}`);
+// the impacts are shown in alphabetical order of their names everywhere: the
+// table, the plots and the strategy panel read the same order
+const d_order = (d) => {
+  const n = d_names(d);
+  return n.map((_, j) => j).sort((a, b) => n[a].localeCompare(n[b]));
+};
 const h = (t) => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let SELECTED = null;
 
@@ -388,10 +395,11 @@ function select(i) {
     : '<p class="status">No choice of the controller is decided on this branch.</p>';
   // the expected impacts of the point, exact, each with its name and, when
   // the exact value is a fraction, its decimal beside it
-  const values = d_names(LAST).map((n, j) => {
+  const names = d_names(LAST);
+  const values = d_order(LAST).map(j => {
     const v = p.value[j];
     const dec = v.includes('/') ? ` (${String(+p.approx[j])})` : '';
-    return `<span style="margin-right:14px">${n} <code>${v}</code>${dec}</span>`;
+    return `<span style="margin-right:14px">${h(names[j])} <code>${v}</code>${dec}</span>`;
   }).join('');
   $('str').innerHTML = `<h3>Strategy of point ${i + 1}</h3>`
     + `<div style="margin-bottom:7px">expected: ${values}</div>` + lines;
@@ -403,10 +411,11 @@ function select(i) {
 // line is chosen by clicking it, a wide transparent stroke under it making
 // the click easy.
 function parallel(d) {
-  const names = d_names(d), k = names.length;
+  const all = d_names(d), order = d_order(d), k = order.length;
+  const names = order.map(j => all[j]);
   const step = 92, M = { l: 46, r: 46, t: 24, b: 40 }, H = 280;
   const W = M.l + step * (k - 1) + M.r;
-  const cols = names.map((_, j) => d.points.map(p => p.approx[j]));
+  const cols = order.map(j => d.points.map(p => p.approx[j]));
   const lo = cols.map(c => Math.min(...c)), hi = cols.map(c => Math.max(...c));
   const X = (j) => M.l + step * j;
   const Y = (j, v) => { const d = (hi[j] - lo[j]) || Math.abs(hi[j]) || 1;
@@ -420,7 +429,7 @@ function parallel(d) {
       + `<text x="${X(j)}" y="${H - M.b + 29}" font-size="10.5" fill="#6e6e6e" text-anchor="middle">${fmt(lo[j])}</text>`;
   }
   const lines = d.points.map((p, i) => {
-    const pts = p.approx.map((v, j) => `${X(j)},${Y(j, v)}`).join(' ');
+    const pts = order.map((oj, j) => `${X(j)},${Y(j, p.approx[oj])}`).join(' ');
     return `<polyline data-i="${i}" class="pc" points="${pts}"/>`
          + `<polyline data-hit="${i}" points="${pts}" fill="none" stroke="transparent" stroke-width="10" style="cursor:pointer"/>`;
   }).join('');
@@ -431,7 +440,8 @@ function parallel(d) {
 }
 
 function svg(d) {
-  const P = d.points.map(p => [p.approx[0], p.approx[1]]);
+  const [ox, oy] = d_order(d), names = d_names(d);
+  const P = d.points.map(p => [p.approx[ox], p.approx[oy]]);
   const W = 460, H = 280, M = { l: 52, r: 18, t: 14, b: 38 };
   const xs = P.map(p => p[0]), ys = P.map(p => p[1]);
   const pad = (a) => { const lo = Math.min(...a), hi = Math.max(...a);
@@ -463,9 +473,9 @@ function svg(d) {
     <line x1="${M.l}" y1="${H - M.b}" x2="${W - M.r}" y2="${H - M.b}" stroke="#52514e"/>
     <line x1="${M.l}" y1="${M.t}" x2="${M.l}" y2="${H - M.b}" stroke="#52514e"/>
     <text x="${(M.l + W - M.r) / 2}" y="${H - 6}" font-size="11" fill="#0b0b0b"
-          text-anchor="middle">${d.names[0]}</text>
+          text-anchor="middle">${h(names[ox])}</text>
     <text x="14" y="${(M.t + H - M.b) / 2}" font-size="11" fill="#0b0b0b" text-anchor="middle"
-          transform="rotate(-90 14 ${(M.t + H - M.b) / 2})">${d.names[1]}</text>
+          transform="rotate(-90 14 ${(M.t + H - M.b) / 2})">${h(names[oy])}</text>
   </svg>`;
 }
 </script>

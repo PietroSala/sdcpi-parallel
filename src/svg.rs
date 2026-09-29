@@ -65,7 +65,9 @@ fn task_lines(tree: &Tree, id: u32) -> (String, String, String) {
         .unwrap_or_default();
     let duration = format!("duration {}", tree.node(id).duration);
     let names = &tree.meta.impact_names;
-    let mut parts = Vec::new();
+    // the impacts in alphabetical order of their names, as the page shows
+    // them everywhere
+    let mut parts: Vec<(String, String)> = Vec::new();
     for (j, r) in tree.impact_exact(id).iter().enumerate() {
         if r.numer().sign() == num_bigint::Sign::NoSign {
             continue;
@@ -74,9 +76,11 @@ fn task_lines(tree: &Tree, id: u32) -> (String, String, String) {
             .get(j)
             .cloned()
             .unwrap_or_else(|| format!("impact {j}"));
-        parts.push(format!("{label} {}", decimal(r, 6)));
+        parts.push((label, decimal(r, 6)));
     }
-    (name, duration, parts.join(" · "))
+    parts.sort_by(|a, b| a.0.cmp(&b.0));
+    let line: Vec<String> = parts.into_iter().map(|(l, v)| format!("{l} {v}")).collect();
+    (name, duration, line.join(" · "))
 }
 
 /// An estimate of the width of a text at a font size, enough to size a box.
