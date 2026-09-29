@@ -79,6 +79,10 @@
   <textarea id="proc" spellcheck="false"></textarea>
   <div class="hint" id="grammar"></div>
 
+  <label class="switch" for="detail"><input id="detail" type="checkbox"><span class="track"></span><span>Detailed regions</span></label>
+  <div class="hint">Every region of the tree in a dashed box with its identifier, and the
+    identifier among the data of every task.</div>
+
   <div class="row">
     <div>
       <label for="workers">Workers</label>
@@ -96,10 +100,6 @@
       </select>
     </div>
   </div>
-
-  <label class="switch" for="detail"><input id="detail" type="checkbox"><span class="track"></span><span>Detailed regions</span></label>
-  <div class="hint">Every region of the tree in a dashed box with its identifier, and the
-    identifier among the data of every task.</div>
 
   <label for="limit">Time limit, seconds</label>
   <input id="limit" type="number" min="1" max="600" step="1" value="30">
