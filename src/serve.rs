@@ -24,10 +24,16 @@
 //!   * the search is given a time limit that the page cannot remove, because
 //!     a search with no limit does not have to terminate;
 //!   * no path from a request ever reaches the file system: the page is a
-//!     constant and the process is parsed by the parser of the crate.
+//!     constant and the process is parsed by the parser of the crate. The one
+//!     thing read from disk is an instance of the benchmark, addressed by
+//!     four numbers and a mode that are checked against the grid before a
+//!     path is built from them, under a folder fixed when the server starts;
+//!     an instance not yet on disk is drawn by the generator of the suite,
+//!     a fixed script given those same numbers.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::num::Exact;
@@ -51,11 +57,53 @@ const EXAMPLE: &str = "\
 , ( (Check, 1, {euro: 6, hours: 1}) || (File, 1, {euro: 4, hours: 1}) )
 , ( (Courier, 1, {euro: 26, hours: 1}) ^ (Counter, 2, {euro: 2, hours: 2}) ) )";
 
+/// Where the instances of the benchmark are, and the script that draws one
+/// that is not there yet. Both are fixed when the server starts: `--bench`
+/// names the folder of the instances, or the environment `SDCPI_BENCH`, or
+/// the folder of the campaign beside this executable's tree; the generator
+/// is the stage of the first suite beside it, when it is there.
+pub struct Bench {
+    instances: PathBuf,
+    generator: Option<PathBuf>,
+}
+
+impl Bench {
+    fn locate(flag: Option<&str>) -> Bench {
+        let root = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.ancestors().nth(3).map(|p| p.to_path_buf()));
+        let instances = match flag.map(PathBuf::from).or_else(|| std::env::var_os("SDCPI_BENCH").map(PathBuf::from)) {
+            Some(p) => p,
+            None => root
+                .clone()
+                .map(|r| r.join("scripts/pareto-frontier/experiment/instances"))
+                .unwrap_or_else(|| PathBuf::from("scripts/pareto-frontier/experiment/instances")),
+        };
+        // the generator: beside this executable's tree, or beside the folder
+        // of the instances, which sits three levels under the scripts
+        let generator = root
+            .map(|r| r.join("scripts/storm-comparison-ablation/make_bpmn_cpi.py"))
+            .filter(|p| p.is_file())
+            .or_else(|| {
+                instances
+                    .ancestors()
+                    .nth(3)
+                    .map(|s| s.join("storm-comparison-ablation/make_bpmn_cpi.py"))
+                    .filter(|p| p.is_file())
+            });
+        Bench { instances, generator }
+    }
+    fn available(&self) -> bool {
+        self.instances.is_dir() || self.generator.is_some()
+    }
+}
+
 pub fn cmd_serve(args: &[String]) -> i32 {
     let args = match parse_args(args) {
         Ok(a) => a,
         Err(e) => return crate::fail(&e),
     };
+    let bench = Bench::locate(args.flag("bench"));
     let port: u16 = match args.flag("port") {
         None => 8080,
         Some(p) => match p.parse() {
@@ -70,16 +118,21 @@ pub fn cmd_serve(args: &[String]) -> i32 {
         Err(e) => return crate::fail(&format!("cannot listen on port {port}: {e}")),
     };
     println!("sdcpi serve: http://127.0.0.1:{port}  (ctrl-c to stop)");
+    if bench.available() {
+        println!("benchmark instances: {}", bench.instances.display());
+    } else {
+        println!("benchmark instances: none found, the loading panel is hidden");
+    }
     for stream in listener.incoming() {
         match stream {
-            Ok(s) => serve_one(s),
+            Ok(s) => serve_one(s, &bench),
             Err(e) => eprintln!("connection refused itself: {e}"),
         }
     }
     0
 }
 
-fn serve_one(mut stream: TcpStream) {
+fn serve_one(mut stream: TcpStream, bench: &Bench) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(60)));
     let (method, path, body) = match request(&mut stream) {
@@ -88,7 +141,11 @@ fn serve_one(mut stream: TcpStream) {
     };
     match (method.as_str(), path.as_str()) {
         ("GET", "/") => send(&mut stream, 200, "text/html; charset=utf-8", PAGE),
-        ("GET", "/api/hello") => send(&mut stream, 200, "application/json", &hello()),
+        ("GET", "/api/hello") => send(&mut stream, 200, "application/json", &hello(bench)),
+        ("POST", "/api/bench") => {
+            let out = load_bench(&body, bench);
+            send(&mut stream, 200, "application/json", &out)
+        }
         ("POST", "/api/frontier") => {
             let out = frontier(&body);
             send(&mut stream, 200, "application/json", &out)
@@ -279,16 +336,109 @@ fn esc(s: &str) -> String {
     o
 }
 
-fn hello() -> String {
+fn hello(bench: &Bench) -> String {
+    let modes: Vec<String> = crate::text::MODES.iter().map(|m| esc(m)).collect();
     format!(
-        "{{\"grammar\": {}, \"example\": {}}}",
+        "{{\"grammar\": {}, \"example\": {}, \"bench\": {}, \"modes\": [{}]}}",
         esc(
             "(name, duration, {impact: value, ...}) is a task, the map naming only the \
              impacts that are not zero; , is a sequence, || a parallel, ^ a choice of \
              the controller and ^[p] one of nature taking its left operand with \
              probability p; brackets group."
         ),
-        esc(EXAMPLE)
+        esc(EXAMPLE),
+        bench.available(),
+        modes.join(", ")
+    )
+}
+
+/// An instance of the benchmark as text for the page: the four coordinates
+/// and the mode are checked against the grid, the path is built from them
+/// under the folder of the instances, an instance not on disk is drawn by
+/// the generator of the suite, and the impacts are drawn again here when
+/// asked, with the mode and the seed given.
+fn load_bench(body: &str, bench: &Bench) -> String {
+    let num = |name: &str, lo: u32, hi: u32| -> Result<u32, String> {
+        let v = field(body, name).ok_or_else(|| format!("{name} is missing"))?;
+        let v: u32 = v
+            .trim()
+            .parse()
+            .map_err(|_| format!("{name} is not a number: {v:?}"))?;
+        if v < lo || v > hi {
+            return Err(format!("{name} must be between {lo} and {hi}"));
+        }
+        Ok(v)
+    };
+    let (n, i, k, d) = match (
+        num("nested", 1, 10),
+        num("independent", 1, 10),
+        num("process", 1, 10),
+        num("impacts", 2, 10),
+    ) {
+        (Ok(n), Ok(i), Ok(k), Ok(d)) => (n, i, k, d),
+        (Err(e), ..) | (_, Err(e), ..) | (_, _, Err(e), _) | (_, _, _, Err(e)) => return err(&e),
+    };
+    let mode = field(body, "mode").unwrap_or_else(|| "random".into());
+    if !crate::text::MODES.contains(&mode.as_str()) {
+        return err(&format!("no mode {mode:?}"));
+    }
+    let regenerate = matches!(field(body, "regenerate").as_deref(), Some("1") | Some("true"));
+    let seed = field(body, "seed")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(20260815);
+    let key = format!("{n}-{i}-{k}-{d}-{mode}");
+    let path = bench
+        .instances
+        .join(format!("{n}-nested"))
+        .join(format!("{i}-independent"))
+        .join(format!("{k}-process_number"))
+        .join(format!("{d}-{mode}.yaml"));
+    if !path.is_file() {
+        let Some(generator) = &bench.generator else {
+            return err(&format!(
+                "the instance {key} is not on disk and no generator is beside this executable"
+            ));
+        };
+        let run = std::process::Command::new("python3")
+            .arg(generator)
+            .args(["--nested", &n.to_string(), "--independent", &i.to_string()])
+            .args(["--process-number", &k.to_string(), "--dimensions", &d.to_string()])
+            .args(["--mode", &mode, "--seed", "20260815", "--out"])
+            .arg(&bench.instances)
+            .output();
+        match run {
+            Ok(o) if o.status.success() && path.is_file() => {}
+            Ok(o) => {
+                return err(&format!(
+                    "the generator did not write {key}: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ))
+            }
+            Err(e) => return err(&format!("the generator could not be run: {e}")),
+        }
+    }
+    let yaml = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => return err(&format!("{key} could not be read: {e}")),
+    };
+    let tree = match Tree::parse(&yaml) {
+        Ok(t) => t,
+        Err(e) => return err(&format!("the instance {key} does not read: {e}")),
+    };
+    let fresh = if regenerate {
+        match crate::text::regenerate(&tree, d as usize, &mode, seed) {
+            Ok(f) => Some(f),
+            Err(e) => return err(&e),
+        }
+    } else {
+        None
+    };
+    let process = crate::text::to_text(&tree, fresh.as_deref());
+    format!(
+        "{{\"instance\": {}, \"process\": {}, \"regenerated\": {}}}",
+        esc(&key),
+        esc(&process),
+        regenerate
     )
 }
 

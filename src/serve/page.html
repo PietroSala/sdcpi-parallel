@@ -37,6 +37,12 @@
   button { margin-top: 18px; width: 100%; padding: 9px; border: 0; border-radius: 5px;
            background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
   button:disabled { background: var(--muted); cursor: default; }
+  button.small { margin-top: 0; padding: 7px; }
+  details { border: 1px solid var(--line); border-radius: 6px; padding: 8px 11px 10px;
+            margin-bottom: 14px; background: #fff; }
+  summary { cursor: pointer; font-size: 12px; font-weight: 600; letter-spacing: 0.01em; }
+  details label:first-of-type { margin-top: 14px; }
+  details .row:first-of-type label { margin-top: 10px; }
   section { padding: 18px 22px; overflow: auto; }
   .status { color: var(--muted); font-size: 13px; }
   .err { color: #b03a2e; white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace;
@@ -76,6 +82,27 @@
 
 <main>
 <form id="f">
+  <details id="bench" hidden>
+    <summary>Load a process of the benchmark</summary>
+    <div class="row">
+      <div><label for="b-n">nested</label><select id="b-n"></select></div>
+      <div><label for="b-i">independent</label><select id="b-i"></select></div>
+    </div>
+    <div class="row">
+      <div><label for="b-k">process</label><select id="b-k"></select></div>
+      <div><label for="b-d">impacts</label><select id="b-d"></select></div>
+    </div>
+    <label for="b-m">impact mode</label>
+    <select id="b-m"></select>
+    <label class="switch" for="regen"><input id="regen" type="checkbox"><span class="track"></span><span>Regenerate the impacts</span></label>
+    <div class="row">
+      <div><label for="seed">seed</label><input id="seed" type="number" value="20260815"></div>
+      <div><label>&nbsp;</label><button type="button" id="load" class="small">Load</button></div>
+    </div>
+    <div class="hint" id="benchnote">The thousand processes of the benchmark, ten per pair of nesting and
+      independence, with the impacts of the campaign; drawn again by the mode chosen when the switch is on.</div>
+  </details>
+
   <label for="proc">Process</label>
   <textarea id="proc" spellcheck="false"></textarea>
   <div class="hint" id="grammar"></div>
@@ -121,11 +148,49 @@
 const $ = (id) => document.getElementById(id);
 let LAST = null;
 
+function fill(id, from, to, chosen) {
+  const s = $(id);
+  for (let v = from; v <= to; v++) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = v; o.selected = v === chosen;
+    s.appendChild(o);
+  }
+}
+fill('b-n', 1, 10, 2); fill('b-i', 1, 10, 3); fill('b-k', 1, 10, 2); fill('b-d', 2, 10, 4);
+
 fetch('/api/hello').then(r => r.json()).then(h => {
   $('grammar').textContent = h.grammar || '';
   if (h.example) $('proc').value = h.example;
+  if (h.bench) {
+    (h.modes || []).forEach(m => {
+      const o = document.createElement('option'); o.value = m; o.textContent = m; $('b-m').appendChild(o);
+    });
+    $('bench').hidden = false;
+  }
   refreshDiagram();
 }).catch(() => {});
+
+// An instance of the benchmark, its text put in the process box.
+$('load').addEventListener('click', async () => {
+  const body = new URLSearchParams({
+    nested: $('b-n').value, independent: $('b-i').value, process: $('b-k').value,
+    impacts: $('b-d').value, mode: $('b-m').value,
+    regenerate: $('regen').checked ? '1' : '0', seed: $('seed').value,
+  });
+  $('load').disabled = true;
+  $('benchnote').textContent = 'Loading…';
+  try {
+    const r = await fetch('/api/bench', { method: 'POST', body });
+    const d = await r.json();
+    if (d.error) { $('benchnote').textContent = d.error; }
+    else {
+      $('proc').value = d.process;
+      $('benchnote').textContent = `Loaded ${d.instance}` + (d.regenerated ? ', the impacts drawn again' : '');
+      refreshDiagram();
+    }
+  } catch (e) { $('benchnote').textContent = String(e); }
+  $('load').disabled = false;
+});
 
 // The diagram follows the text: a quarter of a second after the last
 // keystroke the process is sent and drawn again; while it does not parse the

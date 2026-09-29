@@ -16,6 +16,7 @@ mod num;
 mod pareto;
 mod search;
 mod svg;
+mod text;
 mod serve;
 mod state;
 mod tables;
@@ -45,6 +46,7 @@ fn main() {
         "parse" => cmd_parse(&args[1..]),
         "to_prism" => cmd_to_prism(&args[1..]),
         "to_svg" => cmd_to_svg(&args[1..]),
+        "to_text" => cmd_to_text(&args[1..]),
         "to_objective" => cmd_to_objective(&args[1..]),
         "serve" => serve::cmd_serve(&args[1..]),
         "test" => cmd_test(&args[1..]),
@@ -69,6 +71,7 @@ sdcpi  on-the-fly strategy synthesis for BPMN+CPI processes
   sdcpi parse     (<process> | --file F) [--out F]
   sdcpi to_prism  <instance> [--encode-history true|false] [--out F]
   sdcpi to_svg    <instance> [--detail true|false] [--out F]
+  sdcpi to_text   <instance> [--regenerate MODE --impacts K --seed S] [--out F]
   sdcpi to_objective <instance> (--B a,b,... | --B-file F | --pareto true) [--out F]
   sdcpi info      <instance>
   sdcpi bound     <instance>
@@ -512,6 +515,48 @@ fn cmd_optima(args: &[String]) -> i32 {
         Err(e) => fail(&format!("{e:?}")),
     }
 }
+/// The process of an instance as text in the grammar of parse, the impacts
+/// drawn again by a mode of the benchmark when asked.
+fn cmd_to_text(args: &[String]) -> i32 {
+    let args = match parse_args(args) {
+        Ok(a) => a,
+        Err(e) => return fail(&e),
+    };
+    let (_, tree) = match load(&args) {
+        Ok(v) => v,
+        Err(e) => return fail(&e),
+    };
+    let fresh = match args.flag("regenerate") {
+        None => None,
+        Some(mode) => {
+            let dim = args
+                .flag("impacts")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(tree.k);
+            let seed = args
+                .flag("seed")
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(20260815);
+            match text::regenerate(&tree, dim, mode, seed) {
+                Ok(f) => Some(f),
+                Err(e) => return fail(&e),
+            }
+        }
+    };
+    let out = text::to_text(&tree, fresh.as_deref());
+    match args.flag("out") {
+        Some(p) => match std::fs::write(p, &out) {
+            Ok(()) => 0,
+            Err(e) => fail(&format!("{p}: {e}")),
+        },
+        None => {
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(out.as_bytes());
+            0
+        }
+    }
+}
+
 /// The process as a BPMN diagram, in SVG, to standard output or to --out F;
 /// --detail true wraps every region in a dashed box with its identifier.
 fn cmd_to_svg(args: &[String]) -> i32 {
