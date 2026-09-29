@@ -224,6 +224,7 @@ $('load').addEventListener('click', async () => {
     else {
       $('proc').value = d.process;
       $('benchnote').textContent = `Loaded ${d.instance}` + (d.regenerated ? ', the impacts drawn again' : '');
+      invalidate();
       refreshDiagram();
     }
   } catch (e) { $('benchnote').textContent = String(e); }
@@ -270,7 +271,14 @@ function refreshDiagram() {
     } catch (e) { /* the server is away; the drawing stays */ }
   }, 250);
 }
-$('proc').addEventListener('input', refreshDiagram);
+// A frontier belongs to the text it was computed from: when the text changes,
+// by a keystroke or a load, the results of the text before leave the page.
+function invalidate() {
+  if (LAST === null) return;
+  LAST = null; SELECTED = null;
+  $('out').innerHTML = '<p class="status">The process changed; press the button to compute its frontier.</p>';
+}
+$('proc').addEventListener('input', () => { invalidate(); refreshDiagram(); });
 
 // Zoom and pan on a drawing: the wheel zooms about the pointer, a drag pans,
 // the buttons zoom about the centre and fit the whole drawing again. The
