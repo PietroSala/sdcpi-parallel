@@ -67,9 +67,21 @@
   .strategy code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted); }
   .strategy div { padding: 2px 0; }
   svg { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
-  #diagram { margin-bottom: 16px; }
-  #diagram svg { max-width: 100%; height: auto; display: block; }
+  /* the diagram lives in a viewport that zooms and pans; the handle at its
+     bottom right corner makes it taller */
+  #diagram { position: relative; height: 380px; min-height: 160px; margin-bottom: 16px;
+             background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+             overflow: hidden; resize: vertical; }
+  #diagram > p { margin: 0; padding: 16px; }
+  #diagram svg { display: block; width: 100%; height: 100%; max-width: none;
+                 border: 0; border-radius: 0; cursor: grab; touch-action: none; }
   #diagram.stale svg { opacity: 0.4; }
+  .zoom { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; }
+  .zoom button { width: 30px; height: 26px; margin: 0; padding: 0; border-radius: 4px;
+                 background: #fff; color: var(--ink); border: 1px solid var(--line);
+                 font-size: 14px; font-weight: 500; line-height: 1; }
+  .zoom button:hover { background: #f1f0ec; }
+  .zoom button.fit { width: auto; padding: 0 8px; font-size: 11.5px; }
   #dnote { color: #b03a2e; font-size: 11.5px; margin-top: 4px; min-height: 1em; }
   .foot { color: var(--muted); font-size: 11.5px; margin-top: 16px; }
 </style>
@@ -205,7 +217,15 @@ function refreshDiagram() {
       const r = await fetch('/api/svg', { method: 'POST', body });
       const d = await r.json();
       if (d.svg) {
-        $('diagram').innerHTML = d.svg;
+        $('diagram').innerHTML = d.svg
+          + '<div class="zoom"><button type="button" title="zoom in">+</button>'
+          + '<button type="button" title="zoom out">−</button>'
+          + '<button type="button" class="fit" title="fit the whole drawing">fit</button></div>';
+        const view = viewport($('diagram').querySelector('svg'));
+        const [zin, zout, fit] = $('diagram').querySelectorAll('.zoom button');
+        zin.addEventListener('click', view.zoomIn);
+        zout.addEventListener('click', view.zoomOut);
+        fit.addEventListener('click', view.fit);
         $('diagram').classList.remove('stale');
         $('dnote').textContent = '';
       } else {
@@ -216,6 +236,62 @@ function refreshDiagram() {
   }, 250);
 }
 $('proc').addEventListener('input', refreshDiagram);
+
+// Zoom and pan on a drawing: the wheel zooms about the pointer, a drag pans,
+// the buttons zoom about the centre and fit the whole drawing again. The
+// drawing is scaled by its viewBox, so nothing is redrawn.
+function viewport(svg) {
+  const home = svg.getAttribute('viewBox').split(/\s+/).map(Number);
+  let vb = home.slice();
+  svg.removeAttribute('width'); svg.removeAttribute('height');
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  const apply = () => svg.setAttribute('viewBox', vb.map(v => v.toFixed(2)).join(' '));
+  const scale = () => {
+    const r = svg.getBoundingClientRect();
+    return Math.min(r.width / vb[2], r.height / vb[3]);
+  };
+  // the point of the drawing under the pointer
+  const at = (ev) => {
+    const r = svg.getBoundingClientRect(), s = scale();
+    const ox = (r.width - vb[2] * s) / 2, oy = (r.height - vb[3] * s) / 2;
+    return [vb[0] + (ev.clientX - r.left - ox) / s, vb[1] + (ev.clientY - r.top - oy) / s];
+  };
+  const zoom = (f, cx, cy) => {
+    const w = vb[2] / f, h = vb[3] / f;
+    if (w < home[2] / 40 || w > home[2] * 8) return;   // between forty times in and eight out
+    vb = [cx - (cx - vb[0]) / f, cy - (cy - vb[1]) / f, w, h];
+    apply();
+  };
+  svg.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    const [cx, cy] = at(ev);
+    zoom(Math.exp(-ev.deltaY * 0.002), cx, cy);
+  }, { passive: false });
+  let drag = null;
+  svg.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0) return;
+    drag = [ev.clientX, ev.clientY];
+    svg.setPointerCapture(ev.pointerId);
+    svg.style.cursor = 'grabbing';
+  });
+  svg.addEventListener('pointermove', (ev) => {
+    if (!drag) return;
+    const s = scale();
+    vb[0] -= (ev.clientX - drag[0]) / s;
+    vb[1] -= (ev.clientY - drag[1]) / s;
+    drag = [ev.clientX, ev.clientY];
+    apply();
+  });
+  const release = () => { drag = null; svg.style.cursor = 'grab'; };
+  svg.addEventListener('pointerup', release);
+  svg.addEventListener('pointercancel', release);
+  const centre = () => [vb[0] + vb[2] / 2, vb[1] + vb[3] / 2];
+  return {
+    zoomIn: () => zoom(1.25, ...centre()),
+    zoomOut: () => zoom(0.8, ...centre()),
+    fit: () => { vb = home.slice(); apply(); },
+  };
+}
 $('detail').addEventListener('change', () => {
   refreshDiagram();
   if (LAST && SELECTED !== null) select(SELECTED);
