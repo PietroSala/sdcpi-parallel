@@ -15,6 +15,7 @@ mod exact;
 mod num;
 mod pareto;
 mod search;
+mod svg;
 mod serve;
 mod state;
 mod tables;
@@ -43,6 +44,7 @@ fn main() {
         "pareto" => cmd_pareto(&args[1..]),
         "parse" => cmd_parse(&args[1..]),
         "to_prism" => cmd_to_prism(&args[1..]),
+        "to_svg" => cmd_to_svg(&args[1..]),
         "to_objective" => cmd_to_objective(&args[1..]),
         "serve" => serve::cmd_serve(&args[1..]),
         "test" => cmd_test(&args[1..]),
@@ -66,6 +68,7 @@ sdcpi  on-the-fly strategy synthesis for BPMN+CPI processes
   sdcpi pareto    <instance> [--precision E] [--obdd-library L] [options]
   sdcpi parse     (<process> | --file F) [--out F]
   sdcpi to_prism  <instance> [--encode-history true|false] [--out F]
+  sdcpi to_svg    <instance> [--out F]
   sdcpi to_objective <instance> (--B a,b,... | --B-file F | --pareto true) [--out F]
   sdcpi info      <instance>
   sdcpi bound     <instance>
@@ -509,6 +512,30 @@ fn cmd_optima(args: &[String]) -> i32 {
         Err(e) => fail(&format!("{e:?}")),
     }
 }
+/// The process as a BPMN diagram, in SVG, to standard output or to --out F.
+fn cmd_to_svg(args: &[String]) -> i32 {
+    let args = match parse_args(args) {
+        Ok(a) => a,
+        Err(e) => return fail(&e),
+    };
+    let (_, tree) = match load(&args) {
+        Ok(v) => v,
+        Err(e) => return fail(&e),
+    };
+    let text = svg::render(&tree);
+    match args.flag("out") {
+        Some(p) => match std::fs::write(p, &text) {
+            Ok(()) => 0,
+            Err(e) => fail(&format!("{p}: {e}")),
+        },
+        None => {
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(text.as_bytes());
+            0
+        }
+    }
+}
+
 fn cmd_to_objective(args: &[String]) -> i32 {
     let args = match parse_args(args) {
         Ok(a) => a,

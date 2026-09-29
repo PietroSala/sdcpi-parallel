@@ -93,6 +93,10 @@ fn serve_one(mut stream: TcpStream) {
             let out = frontier(&body);
             send(&mut stream, 200, "application/json", &out)
         }
+        ("POST", "/api/svg") => {
+            let out = diagram(&body);
+            send(&mut stream, 200, "application/json", &out)
+        }
         _ => send(&mut stream, 404, "text/plain; charset=utf-8", "no such page\n"),
     }
 }
@@ -280,6 +284,24 @@ fn hello() -> String {
 
 fn err(message: &str) -> String {
     format!("{{\"error\": {}}}", esc(message))
+}
+
+/// The diagram of the process as the page has it at the moment, drawn as
+/// SVG; parsed by the parser of the crate and nothing else.
+fn diagram(body: &str) -> String {
+    let text = match field(body, "process") {
+        Some(t) if !t.trim().is_empty() => t,
+        _ => return err("no process was given"),
+    };
+    let yaml = match parse::to_yaml(&text) {
+        Ok(p) => p.yaml,
+        Err(e) => return err(&format!("the process does not parse: {e}")),
+    };
+    let tree = match Tree::parse(&yaml) {
+        Ok(t) => t,
+        Err(e) => return err(&format!("the instance does not read: {e}")),
+    };
+    format!("{{\"svg\": {}}}", esc(&crate::svg::render(&tree)))
 }
 
 /// Runs one search and answers with the frontier, every point with the

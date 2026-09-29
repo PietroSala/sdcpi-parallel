@@ -49,6 +49,10 @@
                  letter-spacing: 0.03em; }
   .strategy code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
   svg { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  #diagram { margin-bottom: 16px; }
+  #diagram svg { max-width: 100%; height: auto; display: block; }
+  #diagram.stale svg { opacity: 0.4; }
+  #dnote { color: #b03a2e; font-size: 11.5px; margin-top: 4px; min-height: 1em; }
   .foot { color: var(--muted); font-size: 11.5px; margin-top: 16px; }
 </style>
 
@@ -91,6 +95,8 @@
 </form>
 
 <section>
+  <div id="diagram"><p class="status">The diagram of the process is drawn here as you type.</p></div>
+  <div id="dnote"></div>
   <div id="out"><p class="status">Paste a process and press the button.</p></div>
 </section>
 </main>
@@ -102,7 +108,32 @@ let LAST = null;
 fetch('/api/hello').then(r => r.json()).then(h => {
   $('grammar').textContent = h.grammar || '';
   if (h.example) $('proc').value = h.example;
+  refreshDiagram();
 }).catch(() => {});
+
+// The diagram follows the text: a quarter of a second after the last
+// keystroke the process is sent and drawn again; while it does not parse the
+// last drawing stays, dimmed, with the reason under it.
+let diagramTimer = null;
+function refreshDiagram() {
+  clearTimeout(diagramTimer);
+  diagramTimer = setTimeout(async () => {
+    const body = new URLSearchParams({ process: $('proc').value });
+    try {
+      const r = await fetch('/api/svg', { method: 'POST', body });
+      const d = await r.json();
+      if (d.svg) {
+        $('diagram').innerHTML = d.svg;
+        $('diagram').classList.remove('stale');
+        $('dnote').textContent = '';
+      } else {
+        $('diagram').classList.add('stale');
+        $('dnote').textContent = d.error || '';
+      }
+    } catch (e) { /* the server is away; the drawing stays */ }
+  }, 250);
+}
+$('proc').addEventListener('input', refreshDiagram);
 
 $('f').addEventListener('submit', async (e) => {
   e.preventDefault();
