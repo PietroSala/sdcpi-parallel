@@ -132,14 +132,16 @@
   <div class="hint">The impacts of a task shown when the pointer rests on its box, instead of
     in a line under its name, which keeps the boxes narrow when the impacts are many.</div>
   <label class="switch" for="bars"><input id="bars" type="checkbox" checked><span class="track"></span><span>Impacts as bars</span></label>
-  <div class="hint">The impacts of a task as bars in its box, left to right in the order of the
-    names, each as tall and as hot as its value against the greatest value of that impact over
-    the process, blue at nothing and fire red at the greatest; the values stay in the tooltip.
-    Choose the impacts drawn.</div>
+  <div class="hint">The impacts of a task as bars in its box, one row per impact in the order of
+    the names, each as long and as hot as its value against the greatest value of that impact
+    over the process, blue at nothing and fire red at the greatest; the values stay in the
+    tooltip. Choose the impacts drawn.</div>
   <div id="chips" class="chips"></div>
   <label class="switch" for="clocks"><input id="clocks" type="checkbox" checked><span class="track"></span><span>Duration as clock</span></label>
   <div class="hint">The duration of a task as a clock in the corner of its box, the disc filled by the
     duration against the longest of the process, whole for the longest; the number stays in the tooltip.</div>
+  <label class="switch" for="names"><input id="names" type="checkbox" checked><span class="track"></span><span>Show names</span></label>
+  <div class="hint">The name of its impact at the left of every bar, and the duration under the clock.</div>
 
   <div class="row">
     <div>
@@ -234,7 +236,8 @@ function refreshDiagram() {
                                        detail: $('detail').checked ? '1' : '0',
                                        tooltips: $('tips').checked ? '1' : '0',
                                        bars: $('bars').checked ? '1' : '0',
-                                       clocks: $('clocks').checked ? '1' : '0' });
+                                       clocks: $('clocks').checked ? '1' : '0',
+                                       names: $('names').checked ? '1' : '0' });
     // the impacts to draw, once the chips exist; before the first drawing
     // there are none and every impact is drawn
     if (chipInputs.length)
@@ -326,6 +329,7 @@ $('detail').addEventListener('change', () => {
 $('tips').addEventListener('change', refreshDiagram);
 $('bars').addEventListener('change', () => { $('chips').hidden = !$('bars').checked; refreshDiagram(); });
 $('clocks').addEventListener('change', refreshDiagram);
+$('names').addEventListener('change', refreshDiagram);
 
 // One chip per impact of the process, in alphabetical order, coloured as its
 // bars, checked unless it was unchecked before; the set follows the text.

@@ -49,8 +49,20 @@ pub struct Style {
     /// filled by the duration against the longest of the process, whole for
     /// the longest; the number goes to the tooltip.
     pub clocks: bool,
+    /// The names beside what is drawn: the name of its impact at the left of
+    /// every bar, and the duration under the clock.
+    pub names: bool,
 }
 const CLOCK_R: f64 = 7.0;
+/// The column the clock takes at the right of a box, and its height with
+/// the number under it.
+const CLOCK_COL: f64 = 2.0 * (CLOCK_R + 6.0);
+const CLOCK_H: f64 = 2.0 * CLOCK_R + 6.0;
+const CLOCK_H_NAMED: f64 = CLOCK_H + 12.0;
+/// The bars: the length of the longest, the height of a row, the bar in it.
+const BAR_LEN: f64 = 60.0;
+const ROW_H: f64 = 10.0;
+const BAR_T: f64 = 7.0;
 
 /// The colour of a bar is its heat: the value against the greatest value of
 /// its impact over the process, from a cold blue through yellow to a fire
@@ -66,9 +78,6 @@ fn heat(t: f64) -> String {
     let mix = |x: u8, y: u8| -> u8 { (x as f64 + (y as f64 - x as f64) * u).round() as u8 };
     format!("#{:02x}{:02x}{:02x}", mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
 }
-const BAR_W: f64 = 9.0;
-const BAR_GAP: f64 = 4.0;
-const BAR_MAX: f64 = 22.0;
 const LEGEND_H: f64 = 22.0;
 
 struct Sizes {
@@ -113,15 +122,40 @@ fn task_box_lines(tree: &Tree, id: u32, s: &Sizes) -> (Vec<(&'static str, String
     (lines, tip.join(" · "))
 }
 
-/// The height of a task box of `n` lines, and of its bars when it has them.
+/// The height of a task box of `n` lines, with its rows of bars when it
+/// has them, and never shorter than its clock column.
 fn task_h(n: usize, s: &Sizes) -> f64 {
-    16.0 + 14.0 * n as f64 + if s.style.bars.is_some() { BAR_MAX + 8.0 } else { 0.0 }
+    let rows = match &s.style.bars {
+        Some(b) if !b.is_empty() => b.len() as f64 * ROW_H + 6.0,
+        _ => 0.0,
+    };
+    let h = 16.0 + 14.0 * n as f64 + rows;
+    let clock = if !s.style.clocks {
+        0.0
+    } else if s.style.names {
+        CLOCK_H_NAMED + 10.0
+    } else {
+        CLOCK_H + 8.0
+    };
+    h.max(clock)
 }
 
-/// The width the bars of a task need.
-fn bars_w(s: &Sizes) -> f64 {
+/// The width the widest name at the left of the bars takes, when the names
+/// are shown.
+fn label_w(tree: &Tree, s: &Sizes) -> f64 {
+    match (&s.style.bars, s.style.names) {
+        (Some(b), true) if !b.is_empty() => {
+            let names = impact_names(tree);
+            b.iter().map(|&c| text_w(&names[c], 9.5)).fold(0.0, f64::max) + 6.0
+        }
+        _ => 0.0,
+    }
+}
+
+/// The width the rows of bars of a task need, name and bar.
+fn bars_w(tree: &Tree, s: &Sizes) -> f64 {
     match &s.style.bars {
-        Some(b) if !b.is_empty() => b.len() as f64 * (BAR_W + BAR_GAP) - BAR_GAP + 24.0,
+        Some(b) if !b.is_empty() => label_w(tree, s) + BAR_LEN + 24.0,
         _ => 0.0,
     }
 }
@@ -207,13 +241,13 @@ fn measure(tree: &Tree, id: u32, s: &mut Sizes) {
     let (w, h) = match n.kind {
         Kind::Task => {
             let (lines, _) = task_box_lines(tree, id, s);
-            let w = lines
+            let text = lines
                 .iter()
                 .map(|(class, text)| text_w(text, if *class == "name" { 13.0 } else { 11.0 }))
                 .fold(TASK_MIN_W, f64::max)
-                + 24.0
-                + if s.style.clocks { 2.0 * (CLOCK_R + 6.0) } else { 0.0 };
-            (w.max(bars_w(s)), task_h(lines.len(), s))
+                + 24.0;
+            let clock = if s.style.clocks { CLOCK_COL } else { 0.0 };
+            (text.max(bars_w(tree, s)) + clock, task_h(lines.len(), s))
         }
         Kind::Sequence => {
             measure(tree, n.low, s);
@@ -339,7 +373,8 @@ fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
             }
             if s.style.clocks {
                 // the clock in the top right corner: a disc filled clockwise
-                // from twelve by the duration against the longest
+                // from twelve by the duration against the longest, and the
+                // number under it when the names are shown
                 let (cx, cy) = (x + w - CLOCK_R - 6.0, y + CLOCK_R + 6.0);
                 let f = if s.longest > 0 {
                     (n.duration as f64 / s.longest as f64).clamp(0.0, 1.0)
@@ -362,28 +397,45 @@ fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
                         if f > 0.5 { 1 } else { 0 }
                     ));
                 }
+                if s.style.names {
+                    out.push_str(&format!(
+                        "<text class=\"small\" x=\"{cx:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n",
+                        cy + CLOCK_R + 11.0,
+                        n.duration
+                    ));
+                }
             }
             if let Some(bars) = &s.style.bars {
-                // the bars stand on a baseline near the bottom of the box,
-                // each as tall as its value against the greatest value of
-                // its impact over the process
-                let total = bars.len() as f64 * (BAR_W + BAR_GAP) - BAR_GAP;
-                let base = y + h - 7.0;
-                let x0 = x + (w - total) / 2.0;
-                out.push_str(&format!(
-                    "<line class=\"base\" x1=\"{:.1}\" y1=\"{base:.1}\" x2=\"{:.1}\" y2=\"{base:.1}\"/>\n",
-                    x0 - 3.0, x0 + total + 3.0
-                ));
+                // one row per impact under the lines: the name at the left
+                // when the names are shown, then the bar, as long and as hot
+                // as the value against the greatest of its impact
+                let names = impact_names(tree);
+                let lw = label_w(tree, s);
+                let clock = if s.style.clocks { CLOCK_COL } else { 0.0 };
+                let x0 = x + 12.0;
+                let bx = x0 + lw;
+                let top = y + 16.0 + 14.0 * lines.len() as f64 - 4.0;
                 let values = tree.impact(id);
-                for (b, &c) in bars.iter().enumerate() {
+                let _ = clock;
+                for (r, &c) in bars.iter().enumerate() {
+                    let ry = top + r as f64 * ROW_H;
+                    if s.style.names {
+                        out.push_str(&format!(
+                            "<text class=\"small\" x=\"{x0:.1}\" y=\"{:.1}\">{}</text>\n",
+                            ry + BAR_T - 0.5,
+                            xml(&names[c])
+                        ));
+                    }
                     let v = values.get(c).copied().unwrap_or(0.0);
                     let t = if s.maxes[c] > 0.0 { v / s.maxes[c] } else { 0.0 };
-                    let top = t * BAR_MAX;
-                    if top > 0.0 {
+                    out.push_str(&format!(
+                        "<line class=\"base\" x1=\"{bx:.1}\" y1=\"{:.1}\" x2=\"{bx:.1}\" y2=\"{:.1}\"/>\n",
+                        ry, ry + BAR_T
+                    ));
+                    if t > 0.0 {
                         out.push_str(&format!(
-                            "<rect class=\"bar\" x=\"{:.1}\" y=\"{:.1}\" width=\"{BAR_W}\" height=\"{top:.1}\" style=\"fill:{}\"/>\n",
-                            x0 + b as f64 * (BAR_W + BAR_GAP),
-                            base - top,
+                            "<rect class=\"bar\" x=\"{bx:.1}\" y=\"{ry:.1}\" width=\"{:.1}\" height=\"{BAR_T}\" style=\"fill:{}\"/>\n",
+                            t * BAR_LEN,
                             heat(t)
                         ));
                     }
@@ -495,6 +547,7 @@ pub fn render(tree: &Tree, style: &Style) -> String {
          .task .id{{font-family:ui-monospace,Menlo,monospace}}\
          .task .base{{stroke:#c9c8c3;stroke-width:1}}\
          .task .bar{{stroke:none}}\
+         .task .small{{font-size:9.5px;fill:#6e6e6e}}\
          .task .clock{{fill:#fff;stroke:#b9b7b1;stroke-width:1}}\
          .task .hand{{fill:#2a78d6;stroke:none}}\
          .legend text{{font-size:11px;fill:#0b0b0b}}\
@@ -506,7 +559,11 @@ pub fn render(tree: &Tree, style: &Style) -> String {
             // nothing to the greatest value of the impact
             let names = impact_names(tree);
             let listed: Vec<String> = bars.iter().map(|&c| xml(&names[c])).collect();
-            let text = format!("bars, left to right: {}", listed.join(" · "));
+            let text = if style.names {
+                "bars".to_string()
+            } else {
+                format!("bars, top to bottom: {}", listed.join(" · "))
+            };
             out.push_str(&format!(
                 "<g class=\"legend\">\n<text x=\"{PAD:.1}\" y=\"{:.1}\">{text}</text>\n",
                 PAD + 5.0

@@ -71,7 +71,7 @@ sdcpi  on-the-fly strategy synthesis for BPMN+CPI processes
   sdcpi parse     (<process> | --file F) [--out F]
   sdcpi to_prism  <instance> [--encode-history true|false] [--out F]
   sdcpi to_svg    <instance> [--detail true|false] [--tooltips true|false] [--bars all|a,b,...]
-                  [--clocks true|false] [--out F]
+                  [--clocks true|false] [--names true|false] [--out F]
   sdcpi to_text   <instance> [--regenerate MODE --impacts K --seed S] [--out F]
   sdcpi to_objective <instance> (--B a,b,... | --B-file F | --pareto true) [--out F]
   sdcpi info      <instance>
@@ -600,7 +600,12 @@ fn cmd_to_svg(args: &[String]) -> i32 {
         Some("true") => true,
         Some(v) => return fail(&format!("--clocks wants true or false, found {v:?}")),
     };
-    let text = svg::render(&tree, &svg::Style { detailed, tooltips, bars, clocks });
+    let names = match args.flag("names") {
+        None | Some("true") => true,
+        Some("false") => false,
+        Some(v) => return fail(&format!("--names wants true or false, found {v:?}")),
+    };
+    let text = svg::render(&tree, &svg::Style { detailed, tooltips, bars, clocks, names });
     match args.flag("out") {
         Some(p) => match std::fs::write(p, &text) {
             Ok(()) => 0,
