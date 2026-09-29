@@ -417,10 +417,14 @@ function render(d) {
   $('out').querySelectorAll('tbody tr').forEach(tr => {
     tr.addEventListener('click', () => select(+tr.dataset.i));
   });
-  // after a cut, the provisional rows can be hidden
+  // after a cut, the provisional points can be hidden, in the table and in
+  // the plot alike
   const only = $('onlyfinal');
   if (only) only.addEventListener('change', () => {
     $('out').querySelectorAll('tbody tr.prov').forEach(tr => { tr.hidden = only.checked; });
+    $('out').querySelectorAll('svg [data-prov]').forEach(el => {
+      el.style.display = only.checked ? 'none' : '';
+    });
   });
   $('out').querySelectorAll('svg polyline[data-hit]').forEach(l => {
     l.addEventListener('click', () => select(+l.dataset.hit));
@@ -510,9 +514,10 @@ function parallel(d) {
   }
   const lines = d.points.map((p, i) => {
     const pts = order.map((oj, j) => `${X(j)},${Y(j, p.approx[oj])}`).join(' ');
+    const prov = p.certified === false ? ' data-prov="1"' : '';
     const dash = p.certified === false ? ' stroke-dasharray="5 4"' : '';
-    return `<polyline data-i="${i}" class="pc" points="${pts}"${dash}/>`
-         + `<polyline data-hit="${i}" points="${pts}" fill="none" stroke="transparent" stroke-width="10" style="cursor:pointer"/>`;
+    return `<polyline data-i="${i}"${prov} class="pc" points="${pts}"${dash}/>`
+         + `<polyline data-hit="${i}"${prov} points="${pts}" fill="none" stroke="transparent" stroke-width="10" style="cursor:pointer"/>`;
   }).join('');
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:100%;height:auto">
     <style>.pc{fill:none;stroke:#a9c7ec;stroke-width:1.3;pointer-events:none}.pc.sel{stroke:#d0342c;stroke-width:2.6}</style>
@@ -546,7 +551,7 @@ function svg(d) {
   }
   const dots = sorted.map(([p, i]) => {
     const prov = d.points[i].certified === false;
-    return `<circle data-i="${i}" cx="${X(p[0])}" cy="${Y(p[1])}" r="3" fill="${prov ? '#fff' : '#2a78d6'}"`
+    return `<circle data-i="${i}"${prov ? ' data-prov="1"' : ''} cx="${X(p[0])}" cy="${Y(p[1])}" r="3" fill="${prov ? '#fff' : '#2a78d6'}"`
          + ` stroke="#2a78d6" stroke-width="1.4"${prov ? ' stroke-dasharray="2 1.5"' : ''}/>`;
   }).join('');
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
