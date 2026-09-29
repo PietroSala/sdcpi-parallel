@@ -184,6 +184,8 @@ function render(d) {
   if (d.points.length) select(0);
 }
 
+const d_names = (d) => d.names || d.components.map(c => `impact ${c}`);
+
 function select(i) {
   const p = LAST.points[i];
   $('out').querySelectorAll('tbody tr').forEach(tr =>
@@ -193,8 +195,15 @@ function select(i) {
   const lines = p.decisions.length
     ? p.decisions.map(d => `<div><code>${d}</code></div>`).join('')
     : '<p class="status">No choice of the controller is decided on this branch.</p>';
+  // the expected impacts of the point, exact, each with its name and, when
+  // the exact value is a fraction, its decimal beside it
+  const values = d_names(LAST).map((n, j) => {
+    const v = p.value[j];
+    const dec = v.includes('/') ? ` (${String(+p.approx[j])})` : '';
+    return `<span style="margin-right:14px">${n} <code>${v}</code>${dec}</span>`;
+  }).join('');
   $('str').innerHTML = `<h3>Strategy of point ${i + 1}</h3>`
-    + `<div style="margin-bottom:7px"><code>${p.value.join(' , ')}</code></div>` + lines;
+    + `<div style="margin-bottom:7px">expected ${values}</div>` + lines;
 }
 
 function svg(d) {
