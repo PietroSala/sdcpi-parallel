@@ -193,7 +193,9 @@ function render(d) {
     `<tr data-i="${i}"><td>${i + 1}</td>`
     + p.approx.map(v => `<td>${v}</td>`).join('')
     + `<td>${p.steps.length}</td></tr>`).join('');
-  const plot = k >= 2 ? svg(d) : '';
+  // two impacts are a staircase in the plane; three or more are parallel
+  // coordinates, one axis per impact, a line per point, however many
+  const plot = k === 2 ? svg(d) : k >= 3 ? parallel(d) : '';
   $('out').innerHTML = cards + plot
     + `<table><thead>${head}</thead><tbody>${rows}</tbody></table>`
     + `<div class="strategy" id="str"><h3>Strategy</h3>
@@ -201,6 +203,9 @@ function render(d) {
     + `<p class="foot">${d.note || ''}</p>`;
   $('out').querySelectorAll('tbody tr').forEach(tr => {
     tr.addEventListener('click', () => select(+tr.dataset.i));
+  });
+  $('out').querySelectorAll('svg polyline[data-hit]').forEach(l => {
+    l.addEventListener('click', () => select(+l.dataset.hit));
   });
   if (d.points.length) select(0);
 }
@@ -227,8 +232,10 @@ function select(i) {
   const p = LAST.points[i];
   $('out').querySelectorAll('tbody tr').forEach(tr =>
     tr.classList.toggle('sel', +tr.dataset.i === i));
-  document.querySelectorAll('svg circle').forEach(c =>
+  document.querySelectorAll('svg circle[data-i]').forEach(c =>
     c.setAttribute('r', +c.dataset.i === i ? 5 : 3));
+  document.querySelectorAll('svg polyline[data-i]').forEach(l =>
+    l.setAttribute('class', +l.dataset.i === i ? 'pc sel' : 'pc'));
   const lines = p.steps.length
     ? p.steps.map(st => `<div>${sentence(st)}</div>`).join('')
     : '<p class="status">No choice of the controller is decided on this branch.</p>';
@@ -241,6 +248,39 @@ function select(i) {
   }).join('');
   $('str').innerHTML = `<h3>Strategy of point ${i + 1}</h3>`
     + `<div style="margin-bottom:7px">expected: ${values}</div>` + lines;
+}
+
+// Parallel coordinates: one vertical axis per impact, scaled from the least
+// to the greatest value the frontier takes on it, and one line per point
+// through its values. The chosen point is drawn full, the others faint; a
+// line is chosen by clicking it, a wide transparent stroke under it making
+// the click easy.
+function parallel(d) {
+  const names = d_names(d), k = names.length;
+  const step = 92, M = { l: 46, r: 46, t: 24, b: 40 }, H = 280;
+  const W = M.l + step * (k - 1) + M.r;
+  const cols = names.map((_, j) => d.points.map(p => p.approx[j]));
+  const lo = cols.map(c => Math.min(...c)), hi = cols.map(c => Math.max(...c));
+  const X = (j) => M.l + step * j;
+  const Y = (j, v) => { const d = (hi[j] - lo[j]) || Math.abs(hi[j]) || 1;
+                        return H - M.b - (v - lo[j]) / d * (H - M.t - M.b); };
+  const fmt = (v) => String(+(+v).toFixed(3));
+  let axes = '';
+  for (let j = 0; j < k; j++) {
+    axes += `<line x1="${X(j)}" y1="${M.t}" x2="${X(j)}" y2="${H - M.b}" stroke="#52514e"/>`
+      + `<text x="${X(j)}" y="${H - M.b + 16}" font-size="11" fill="#0b0b0b" text-anchor="middle">${h(names[j])}</text>`
+      + `<text x="${X(j)}" y="${M.t - 8}" font-size="10.5" fill="#6e6e6e" text-anchor="middle">${fmt(hi[j])}</text>`
+      + `<text x="${X(j)}" y="${H - M.b + 29}" font-size="10.5" fill="#6e6e6e" text-anchor="middle">${fmt(lo[j])}</text>`;
+  }
+  const lines = d.points.map((p, i) => {
+    const pts = p.approx.map((v, j) => `${X(j)},${Y(j, v)}`).join(' ');
+    return `<polyline data-i="${i}" class="pc" points="${pts}"/>`
+         + `<polyline data-hit="${i}" points="${pts}" fill="none" stroke="transparent" stroke-width="10" style="cursor:pointer"/>`;
+  }).join('');
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:100%;height:auto">
+    <style>.pc{fill:none;stroke:#2a78d6;stroke-width:1.2;opacity:.35}.pc.sel{stroke:#1b5cb0;stroke-width:2.6;opacity:1}</style>
+    ${axes}${lines}
+  </svg>`;
 }
 
 function svg(d) {
