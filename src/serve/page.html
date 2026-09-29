@@ -400,10 +400,16 @@ function render(d) {
   $('out').innerHTML = cards + plot
     + `<div class="strategy" id="str"><h3>Strategy</h3>
          <p class="status">Choose a point to see the strategy that attains it.</p></div>`
+    + (cut ? `<label class="switch" style="margin-top:12px" for="onlyfinal"><input id="onlyfinal" type="checkbox"><span class="track"></span><span>Only the final points</span></label>` : '')
     + `<div class="tablebox"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div>`
     + `<p class="foot">${d.note || ''}</p>`;
   $('out').querySelectorAll('tbody tr').forEach(tr => {
     tr.addEventListener('click', () => select(+tr.dataset.i));
+  });
+  // after a cut, the provisional rows can be hidden
+  const only = $('onlyfinal');
+  if (only) only.addEventListener('change', () => {
+    $('out').querySelectorAll('tbody tr.prov').forEach(tr => { tr.hidden = only.checked; });
   });
   $('out').querySelectorAll('svg polyline[data-hit]').forEach(l => {
     l.addEventListener('click', () => select(+l.dataset.hit));
