@@ -122,6 +122,9 @@
   <label class="switch" for="detail"><input id="detail" type="checkbox"><span class="track"></span><span>Detailed regions</span></label>
   <div class="hint">Every region of the tree in a dashed box with its identifier, and the
     identifier among the data of every task.</div>
+  <label class="switch" for="tips"><input id="tips" type="checkbox"><span class="track"></span><span>Impacts as tooltips</span></label>
+  <div class="hint">The impacts of a task shown when the pointer rests on its box, instead of
+    in a line under its name, which keeps the boxes narrow when the impacts are many.</div>
 
   <div class="row">
     <div>
@@ -212,7 +215,8 @@ function refreshDiagram() {
   clearTimeout(diagramTimer);
   diagramTimer = setTimeout(async () => {
     const body = new URLSearchParams({ process: $('proc').value,
-                                       detail: $('detail').checked ? '1' : '0' });
+                                       detail: $('detail').checked ? '1' : '0',
+                                       tooltips: $('tips').checked ? '1' : '0' });
     try {
       const r = await fetch('/api/svg', { method: 'POST', body });
       const d = await r.json();
@@ -296,6 +300,7 @@ $('detail').addEventListener('change', () => {
   refreshDiagram();
   if (LAST && SELECTED !== null) select(SELECTED);
 });
+$('tips').addEventListener('change', refreshDiagram);
 
 $('f').addEventListener('submit', async (e) => {
   e.preventDefault();

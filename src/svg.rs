@@ -18,8 +18,7 @@
 use crate::num::decimal;
 use crate::tree::{Kind, Tree};
 
-/// The height of a task box; its width follows its text.
-const TASK_H: f64 = 58.0;
+/// The width of a task box follows its text, its height its lines.
 const TASK_MIN_W: f64 = 104.0;
 /// The gateway diamond, vertex to vertex.
 const GW: f64 = 36.0;
@@ -33,15 +32,36 @@ const PAD: f64 = 18.0;
 /// In the detailed drawing, the margin a region keeps around its content,
 /// inside its dashed box, wide enough for the identifier in its corner.
 const REGION_M: f64 = 14.0;
-/// The height of a task box in the detailed drawing, one line more.
-const TASK_H_DETAILED: f64 = 72.0;
-
 struct Sizes {
     w: Vec<f64>,
     h: Vec<f64>,
     /// The detailed drawing: every region in a dashed box with its
     /// identifier, and the identifier among the data of every task.
     detailed: bool,
+    /// The impacts of a task as a tooltip on its box rather than as a line
+    /// in it, which keeps a box narrow when the impacts are many.
+    tooltips: bool,
+}
+
+/// The lines of a task box, the name first and in a larger type: the
+/// identifier in the detailed drawing, the duration, the impacts unless they
+/// are a tooltip.
+fn task_box_lines(tree: &Tree, id: u32, s: &Sizes) -> (Vec<(&'static str, String)>, String) {
+    let (name, duration, impacts) = task_lines(tree, id);
+    let mut lines: Vec<(&'static str, String)> = vec![("name", name)];
+    if s.detailed {
+        lines.push(("detail id", format!("id {id}")));
+    }
+    lines.push(("detail", duration));
+    if !s.tooltips {
+        lines.push(("detail", impacts.clone()));
+    }
+    (lines, impacts)
+}
+
+/// The height of a task box of `n` lines.
+fn task_h(n: usize) -> f64 {
+    16.0 + 14.0 * n as f64
 }
 
 /// How far inside its box the first and last element of a node sit: the
@@ -106,12 +126,13 @@ fn measure(tree: &Tree, id: u32, s: &mut Sizes) {
     let m = if s.detailed { REGION_M } else { 0.0 };
     let (w, h) = match n.kind {
         Kind::Task => {
-            let (name, duration, impacts) = task_lines(tree, id);
-            let w = [text_w(&name, 13.0), text_w(&duration, 11.0), text_w(&impacts, 11.0)]
-                .into_iter()
+            let (lines, _) = task_box_lines(tree, id, s);
+            let w = lines
+                .iter()
+                .map(|(class, text)| text_w(text, if *class == "name" { 13.0 } else { 11.0 }))
                 .fold(TASK_MIN_W, f64::max)
                 + 24.0;
-            (w, if s.detailed { TASK_H_DETAILED } else { TASK_H })
+            (w, task_h(lines.len()))
         }
         Kind::Sequence => {
             measure(tree, n.low, s);
@@ -219,30 +240,26 @@ fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
     let y = y + m;
     match n.kind {
         Kind::Task => {
-            let (name, duration, impacts) = task_lines(tree, id);
-            if s.detailed {
+            let (lines, impacts) = task_box_lines(tree, id, s);
+            out.push_str(&format!("<g class=\"task\" data-id=\"{id}\">\n"));
+            if s.tooltips {
                 out.push_str(&format!(
-                    "<g class=\"task\" data-id=\"{id}\">\n<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"9\" ry=\"9\"/>\n\
-                     <text class=\"name\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n\
-                     <text class=\"detail id\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">id {id}</text>\n\
-                     <text class=\"detail\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n\
-                     <text class=\"detail\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n</g>\n",
-                    x + w / 2.0, y + 19.0, xml(&name),
-                    x + w / 2.0, y + 34.0,
-                    x + w / 2.0, y + 49.0, xml(&duration),
-                    x + w / 2.0, y + 63.0, xml(&impacts)
-                ));
-            } else {
-                out.push_str(&format!(
-                    "<g class=\"task\" data-id=\"{id}\">\n<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"9\" ry=\"9\"/>\n\
-                     <text class=\"name\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n\
-                     <text class=\"detail\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n\
-                     <text class=\"detail\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n</g>\n",
-                    x + w / 2.0, y + 20.0, xml(&name),
-                    x + w / 2.0, y + 36.0, xml(&duration),
-                    x + w / 2.0, y + 50.0, xml(&impacts)
+                    "<title>{}</title>\n",
+                    xml(if impacts.is_empty() { "no impact" } else { &impacts })
                 ));
             }
+            out.push_str(&format!(
+                "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"9\" ry=\"9\"/>\n"
+            ));
+            for (j, (class, text)) in lines.iter().enumerate() {
+                out.push_str(&format!(
+                    "<text class=\"{class}\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n",
+                    x + w / 2.0,
+                    y + 20.0 + 15.0 * j as f64,
+                    xml(text)
+                ));
+            }
+            out.push_str("</g>\n");
         }
         Kind::Sequence => {
             let (wl, hl) = (s.w[n.low as usize], s.h[n.low as usize]);
@@ -294,13 +311,15 @@ fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
 
 /// The diagram of the whole process, start event to end event. `detailed`
 /// wraps every region in a dashed box with its identifier and writes the
-/// identifier among the data of every task.
-pub fn render(tree: &Tree, detailed: bool) -> String {
+/// identifier among the data of every task; `tooltips` moves the impacts of
+/// every task from a line in its box to a tooltip on it.
+pub fn render(tree: &Tree, detailed: bool, tooltips: bool) -> String {
     let n = tree.nodes.len();
     let mut s = Sizes {
         w: vec![0.0; n],
         h: vec![0.0; n],
         detailed,
+        tooltips,
     };
     measure(tree, tree.root, &mut s);
     let (w, h) = (s.w[tree.root as usize], s.h[tree.root as usize]);

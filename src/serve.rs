@@ -462,7 +462,8 @@ fn diagram(body: &str) -> String {
         Err(e) => return err(&format!("the instance does not read: {e}")),
     };
     let detailed = matches!(field(body, "detail").as_deref(), Some("1") | Some("true"));
-    format!("{{\"svg\": {}}}", esc(&crate::svg::render(&tree, detailed)))
+    let tooltips = matches!(field(body, "tooltips").as_deref(), Some("1") | Some("true"));
+    format!("{{\"svg\": {}}}", esc(&crate::svg::render(&tree, detailed, tooltips)))
 }
 
 /// Runs one search and answers with the frontier, every point with the
