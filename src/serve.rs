@@ -468,7 +468,9 @@ fn diagram(body: &str) -> String {
     let names = crate::svg::impact_names(&tree);
     let order = crate::svg::alphabetical(&tree);
     let bars = if matches!(field(body, "bars").as_deref(), Some("1") | Some("true")) {
-        Some(match field(body, "show") {
+        // no list, or an empty one, means every impact: the page has no chips
+        // before its first drawing arrives
+        Some(match field(body, "show").filter(|l| !l.trim().is_empty()) {
             None => order.clone(),
             Some(list) => {
                 let wanted: Vec<String> = list.split(',').map(|t| t.trim().to_string()).collect();

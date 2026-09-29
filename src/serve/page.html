@@ -229,13 +229,16 @@ let diagramTimer = null;
 function refreshDiagram() {
   clearTimeout(diagramTimer);
   diagramTimer = setTimeout(async () => {
-    const shown = [...$('chips').querySelectorAll('input')].filter(c => c.checked).map(c => c.value);
+    const chipInputs = [...$('chips').querySelectorAll('input')];
     const body = new URLSearchParams({ process: $('proc').value,
                                        detail: $('detail').checked ? '1' : '0',
                                        tooltips: $('tips').checked ? '1' : '0',
                                        bars: $('bars').checked ? '1' : '0',
-                                       clocks: $('clocks').checked ? '1' : '0',
-                                       show: shown.join(',') });
+                                       clocks: $('clocks').checked ? '1' : '0' });
+    // the impacts to draw, once the chips exist; before the first drawing
+    // there are none and every impact is drawn
+    if (chipInputs.length)
+      body.set('show', chipInputs.filter(c => c.checked).map(c => c.value).join(','));
     try {
       const r = await fetch('/api/svg', { method: 'POST', body });
       const d = await r.json();
