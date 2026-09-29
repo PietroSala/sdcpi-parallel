@@ -203,7 +203,7 @@ function select(i) {
     return `<span style="margin-right:14px">${n} <code>${v}</code>${dec}</span>`;
   }).join('');
   $('str').innerHTML = `<h3>Strategy of point ${i + 1}</h3>`
-    + `<div style="margin-bottom:7px">expected ${values}</div>` + lines;
+    + `<div style="margin-bottom:7px">expected: ${values}</div>` + lines;
 }
 
 function svg(d) {
