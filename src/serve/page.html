@@ -302,8 +302,11 @@ function select(i) {
     c.setAttribute('r', on ? 5.5 : 3);
     c.setAttribute('fill', on ? '#d0342c' : '#2a78d6');
   });
-  document.querySelectorAll('svg polyline[data-i]').forEach(l =>
-    l.setAttribute('class', +l.dataset.i === i ? 'pc sel' : 'pc'));
+  document.querySelectorAll('svg polyline[data-i]').forEach(l => {
+    const on = +l.dataset.i === i;
+    l.setAttribute('class', on ? 'pc sel' : 'pc');
+    if (on) l.parentNode.appendChild(l);   // in front of every other line
+  });
   const lines = p.steps.length
     ? p.steps.map(st => `<div>${sentence(st)}</div>`).join('')
     : '<p class="status">No choice of the controller is decided on this branch.</p>';
@@ -346,7 +349,7 @@ function parallel(d) {
          + `<polyline data-hit="${i}" points="${pts}" fill="none" stroke="transparent" stroke-width="10" style="cursor:pointer"/>`;
   }).join('');
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:100%;height:auto">
-    <style>.pc{fill:none;stroke:#2a78d6;stroke-width:1.2;opacity:.35}.pc.sel{stroke:#d0342c;stroke-width:2.6;opacity:1}</style>
+    <style>.pc{fill:none;stroke:#a9c7ec;stroke-width:1.3;pointer-events:none}.pc.sel{stroke:#d0342c;stroke-width:2.6}</style>
     ${axes}${lines}
   </svg>`;
 }
