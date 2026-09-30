@@ -40,8 +40,12 @@
            font-weight: 600; cursor: text; padding: 3px 6px; border-radius: 4px; border: 1px dashed transparent; }
   .pname:hover { border-color: var(--line); background: #fff; }
   .pname.untitled { color: var(--muted); font-style: italic; font-weight: 500; }
+  /* while the name is edited it has the whole row: the badge and the buttons
+     step aside and the text wraps rather than scrolls */
   .pname.editing { border-color: var(--accent); background: #fff; font-style: normal; color: var(--ink);
-                   outline: none; text-overflow: clip; overflow-x: auto; }
+                   outline: none; text-overflow: clip; white-space: normal; overflow: visible;
+                   word-break: break-word; }
+  .namerow.editing .badge, .namerow.editing button { display: none; }
   .badge { font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase;
            padding: 2px 7px; border-radius: 10px; background: #eaf2fd; color: var(--accent); }
   .badge.modified { background: #fdf1e4; color: var(--warm); }
@@ -304,6 +308,7 @@ $('pname').addEventListener('click', () => {
   if (n.isContentEditable) return;
   n.textContent = DOC.name || '';
   n.classList.add('editing');
+  n.parentNode.classList.add('editing');
   n.classList.remove('untitled');
   n.contentEditable = 'plaintext-only';
   if (!n.isContentEditable) n.contentEditable = 'true';
@@ -317,6 +322,7 @@ function endNameEdit(commit) {
   const typed = n.textContent.replace(/\s+/g, ' ').trim().slice(0, 80);
   n.contentEditable = 'false';
   n.classList.remove('editing');
+  n.parentNode.classList.remove('editing');
   setName(commit ? typed : DOC.name);
 }
 $('pname').addEventListener('keydown', (ev) => {
