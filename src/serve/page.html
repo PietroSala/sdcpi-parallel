@@ -51,6 +51,7 @@
   .badge.modified { background: #fdf1e4; color: var(--warm); }
   .badge.new { background: #efefec; color: var(--muted); }
   .namerow button.small { width: auto; padding: 5px 11px; }
+  .namerow button#newp { padding: 3px 9px; font-size: 15px; line-height: 1; font-weight: 600; }
   button.ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); }
   #savenote button { width: auto; margin: 0 0 0 6px; padding: 2px 9px; font-size: 11.5px; }
   #savedbox ul { list-style: none; margin: 8px 0 0; padding: 0; }
@@ -211,6 +212,7 @@
 
   <label for="proc">Process</label>
   <div class="namerow">
+    <button type="button" id="newp" class="small ghost" title="start a new, empty process">+</button>
     <span id="pname" class="pname untitled" title="click to name the process" spellcheck="false">untitled</span>
     <span id="pstate" class="badge" hidden></span>
     <span class="grow"></span>
@@ -416,6 +418,28 @@ $('save').addEventListener('click', () => {
   // saving again under the name the text was loaded from needs no question
   saveProcess(DOC.name !== null && DOC.name === DOC.loaded);
 });
+// A new, empty process: the text, the name and the loaded state go. A text
+// not saved is asked about first, on the row of the note, as the overwrite
+// is; a text saved as it stands, or empty, goes without a question.
+function newProcess() {
+  const text = $('proc').value;
+  const unsaved = text.trim() !== '' && text !== DOC.baseline;
+  if (!unsaved) { startNew(); return; }
+  $('savenote').innerHTML = `The text is not saved. Discard it?`
+    + ` <button type="button" id="nw-yes">yes</button><button type="button" id="nw-no" class="ghost">no</button>`;
+  $('nw-yes').addEventListener('click', startNew);
+  $('nw-no').addEventListener('click', () => { $('savenote').textContent = ''; });
+}
+function startNew() {
+  endNameEdit(false);
+  $('proc').value = '';
+  DOC.loaded = null; DOC.baseline = null;
+  setName(null);
+  $('savenote').textContent = '';
+  invalidate(); refreshDiagram(); refreshState();
+  $('proc').focus();
+}
+$('newp').addEventListener('click', newProcess);
 $('rollback').addEventListener('click', () => {
   if (DOC.baseline === null) return;
   $('proc').value = DOC.baseline;
@@ -483,6 +507,15 @@ let diagramTimer = null;
 function refreshDiagram() {
   clearTimeout(diagramTimer);
   diagramTimer = setTimeout(async () => {
+    if ($('proc').value.trim() === '') {
+      // nothing to draw: the drawing, the chips and the sub-processes go
+      $('diagram').innerHTML = '<p class="status">Write a process, or load one.</p>';
+      $('diagram').classList.remove('stale');
+      $('dnote').textContent = '';
+      chips([]);
+      subsPanel([]);
+      return;
+    }
     const chipInputs = [...$('chips').querySelectorAll('input')];
     const body = new URLSearchParams({ process: $('proc').value,
                                        detail: $('detail').checked ? '1' : '0',
