@@ -33,7 +33,9 @@ cargo build --release
 
 One page on the loopback address, a mask over `pareto`: paste a process,
 choose the workers, the ablation and a time limit, and read the frontier with
-the strategy that attains every point. The server is in the binary, so there
+the strategy that attains every point. The switch "Expected time", on by
+default, is the `--time 1` of the command line: the frontier is then taken
+over the expected time and the impacts, the time first. The server is in the binary, so there
 is nothing to install beyond what is already there, it runs on the three
 desktop systems and inside a container alike, and it binds `127.0.0.1` and
 never every address, because it runs a computation for whoever asks.
@@ -258,6 +260,7 @@ sdcpi optima  <instance>                     the exact least and greatest expect
 | `--steal MODE` | how an idle worker finds work: from its ring neighbour (`ring`) or from anyone (`any`) |
 | `--print-size 1` | on `yes`, print how large the returned strategy is: its situations, how many stay undecided, how many decisions it prescribes |
 | `--print-strategy 1` | print the strategy itself; without this the decisions are not recorded, which is faster, and only the answer is reported |
+| `--time 1` | the expected time as the component zero of the cost, in front of the impacts, which keep their order; a budget by name calls it `time`. Every command that reads an instance takes it: `pareto` then takes the frontier over the time and the impacts, `bound` and `optima` report the time first, `to_prism` gives the model the reward `impact0`, paid `t_step` by every fast forward, and `to_objective` asks for it. The time is not one more impact: a task carries a zero there and the fast forward pays its advance once, so a parallel node lasts as long as the longer of its regions; its two bounds take the sum of the regions from above and the greater of the two lower bounds from below, and a task is bounded by what is left of its duration |
 
 ## Output
 

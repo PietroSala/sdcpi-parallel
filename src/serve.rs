@@ -752,6 +752,10 @@ fn frontier(body: &str) -> String {
         Ok(t) => t,
         Err(e) => return err(&format!("the instance does not read: {e}")),
     };
+    // the expected time as the component zero of the frontier, when the
+    // page asks for it: the same transform the flag --time makes
+    let time = matches!(field(body, "time").as_deref(), Some("1") | Some("true"));
+    let tree = if time { tree.with_time() } else { tree };
 
     // the flags the form gives, read by the very code the command line uses,
     // so that a default is never written twice
@@ -863,10 +867,11 @@ fn frontier(body: &str) -> String {
             .to_string()
     };
     format!(
-        "{{\"status\": {}, \"seconds\": {:.6}, \"components\": [{}], \"names\": [{}], \"apexes\": {}, \
+        "{{\"status\": {}, \"seconds\": {:.6}, \"time\": {}, \"components\": [{}], \"names\": [{}], \"apexes\": {}, \
          \"expanded\": {}, \"note\": {}, \"points\": [{}]}}",
         esc(status),
         seconds,
+        time,
         comps.join(", "),
         names.join(", "),
         report.accepts,

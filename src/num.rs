@@ -55,6 +55,9 @@ pub trait Num: Clone + Send + Sync + fmt::Debug + 'static {
     fn prob_of(tree: &Tree, id: u32) -> Self::Prob;
     /// A value from its decimal text, as a budget is written.
     fn from_decimal(text: &str) -> Option<Self>;
+    /// A value from a whole number: the advance of a fast forward, which the
+    /// component zero of the cost pays when the time is in.
+    fn from_u32(n: u32) -> Self;
 }
 
 #[inline]
@@ -163,6 +166,10 @@ impl Num for f64 {
     }
     fn from_decimal(text: &str) -> Option<f64> {
         text.trim().parse().ok()
+    }
+    #[inline]
+    fn from_u32(n: u32) -> f64 {
+        n as f64
     }
 }
 
@@ -306,6 +313,9 @@ impl Num for Exact {
     }
     fn from_decimal(text: &str) -> Option<Exact> {
         parse_decimal(text).map(Exact)
+    }
+    fn from_u32(n: u32) -> Exact {
+        Exact(BigRational::from_integer(BigInt::from(n)))
     }
 }
 

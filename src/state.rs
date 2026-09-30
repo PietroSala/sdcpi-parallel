@@ -26,6 +26,11 @@
 //! more to the point, makes two histories that reach the same configuration at
 //! different times share the memo entry instead of computing it twice.
 //!
+//! The time as the component zero of the cost (`Tree::time`) changes none of
+//! this: the advance `t` is read off the running tasks, which keep their
+//! progress in full, and the recursion of the bounds reads the progress of the
+//! tasks alone.
+//!
 //! The quotient is sound by construction here, no rule below reading the value
 //! of an internal node other than through its sign. That the rules themselves
 //! are Definition 9 is checked from outside, by the `bounds` command, which
@@ -237,6 +242,11 @@ impl<'t> Engine<'t> {
             } else {
                 s[u as usize] = (sv as i32 + t) as i8;
             }
+        }
+        // The time as the component zero of the cost: the fast forward pays
+        // its advance there, once, whatever the number of tasks it moves.
+        if tree.time {
+            impact[0] = impact[0].add(&N::from_u32(t as u32));
         }
         // The progress of a running internal node is not advanced: it is never
         // read, and quotienting it away is what makes a choice state one byte

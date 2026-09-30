@@ -581,6 +581,14 @@ pub fn emit(tree: &Tree, stem: &str, file_name: &str, history: bool) -> String {
     w(ws("// ---------------------------------------------------------------------------"));
     for j in 0..dimension {
         w(format!("rewards \"impact{j}\""));
+        if tree.time && j == 0 {
+            // the time as the component zero: the fast forward pays its
+            // advance, once, the same t_step the closers are read against
+            w(ws("  [ff] true : t_step;   // the time, paid by every advance"));
+            w(ws("endrewards"));
+            w(ws(""));
+            continue;
+        }
         w(ws("  [ff] true :"));
         for (pos, &t) in tasks.iter().enumerate() {
             let plus = if pos == 0 { "  " } else { "+ " };

@@ -75,6 +75,7 @@ pub struct Meta {
     pub expression: String,
 }
 
+#[derive(Clone)]
 pub struct Tree {
     /// One-based: `nodes[0]` is a filler so that `nodes[id]` reads the node of
     /// identifier `id`.
@@ -102,6 +103,11 @@ pub struct Tree {
     /// string at an internal node and at the filler.
     pub task_names: Vec<String>,
     pub meta: Meta,
+    /// Whether the time is the component zero of the cost. When it is, `k`
+    /// counts it, every impact vector carries a zero in front, the fast
+    /// forward pays its advance there and the recursion of the bounds treats
+    /// the component apart: see `with_time`.
+    pub time: bool,
 }
 
 impl Tree {
@@ -148,6 +154,54 @@ impl Tree {
             }
         }
         out
+    }
+
+    /// The same process with the expected time as the component zero of the
+    /// cost, in front of the impacts, which keep their order at `1..=k`.
+    ///
+    /// The time is not one more impact of the tasks: a task carries a zero
+    /// there, and the component is paid by the fast forward, `t` at every
+    /// advance, so that the cost of a run carries its time in front of its
+    /// impacts. The recursion of the bounds reads the flag too, a task owing
+    /// what is left of its duration and a parallel node the greater of its
+    /// two regions from below. The names take `time` in front; an instance
+    /// without names gets `impact0..` for its impacts first, so that a name
+    /// keeps the index the instance gave the component.
+    pub fn with_time(&self) -> Tree {
+        if self.time {
+            return self.clone();
+        }
+        let k = self.k + 1;
+        let rows = self.nodes.len();
+        let mut impacts = vec![0.0; rows * k];
+        let mut impacts_exact = vec![BigRational::from_integer(0.into()); rows * k];
+        for id in 0..rows {
+            for c in 0..self.k {
+                impacts[id * k + 1 + c] = self.impacts[id * self.k + c];
+                impacts_exact[id * k + 1 + c] = self.impacts_exact[id * self.k + c].clone();
+            }
+        }
+        let mut meta = self.meta.clone();
+        if meta.impact_names.is_empty() {
+            meta.impact_names = (0..self.k).map(|c| format!("impact{c}")).collect();
+        }
+        meta.impact_names.insert(0, "time".to_string());
+        meta.dimensions = k;
+        Tree {
+            nodes: self.nodes.clone(),
+            root: self.root,
+            n_nodes: self.n_nodes,
+            n_tasks: self.n_tasks,
+            k,
+            impacts,
+            impacts_exact,
+            probs_exact: self.probs_exact.clone(),
+            tasks: self.tasks.clone(),
+            xors: self.xors.clone(),
+            task_names: self.task_names.clone(),
+            meta,
+            time: true,
+        }
     }
 
     pub fn read(path: &Path) -> Result<Tree, ParseError> {
@@ -273,6 +327,7 @@ impl<'a> Parser<'a> {
             xors: Vec::new(),
             task_names: std::mem::take(&mut self.names),
             meta: std::mem::take(&mut self.meta),
+            time: false,
         };
         for id in 1..=tree.n_nodes {
             match tree.kind(id) {

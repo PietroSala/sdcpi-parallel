@@ -96,6 +96,16 @@ the grammar of parse, written inline or in the file
   to standard output, identifiers in-order, impact_names in the order the
   names first appear, the vectors mapped by that order.
 
+options of every command that reads an instance
+  --time 1              the expected time as the component zero of the cost,
+                        in front of the impacts, which keep their order: a
+                        fast forward pays its advance there, a task is
+                        bounded by what is left of its duration and a
+                        parallel node by the longer of its regions. A budget
+                        given by name calls it `time`; the PRISM model gets
+                        it as the reward impact0, paid t_step by every
+                        fast forward
+
 options for to_prism
   --encode-history B    true, the default, records in the state the branch
                         taken at every choice and every nature node, so a
@@ -257,6 +267,9 @@ fn load(args: &Args) -> Result<(PathBuf, Tree), String> {
         .ok_or_else(|| "no instance given".to_string())?;
     let path = PathBuf::from(spec);
     let tree = Tree::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // the expected time as the component zero, in front of the impacts,
+    // for every command that reads an instance
+    let tree = if args.flag("time").is_some() { tree.with_time() } else { tree };
     Ok((path, tree))
 }
 
@@ -1309,6 +1322,16 @@ fn cmd_bound(args: &[String]) -> i32 {
                 println!("exact max  {}", fmt_vec(&o.max));
             }
             Err(e) => println!("exact      unavailable: {e:?}"),
+        }
+        // the enclosure over every reachable choice state, printed as the
+        // worst breach: a positive number is a state where a bound is not
+        // one, and the two stay at zero or below
+        match exact::enclosure(&store, 2_000_000usize) {
+            Ok((low, high, states)) => {
+                println!("worst L-min {low:e}  over {states} choice states");
+                println!("worst max-U {high:e}");
+            }
+            Err(e) => println!("enclosure  unavailable: {e:?}"),
         }
     }
     0

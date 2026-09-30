@@ -197,6 +197,11 @@
   <label class="switch" for="names"><input id="names" type="checkbox" checked><span class="track"></span><span>Show names</span></label>
   <div class="hint">The name of its impact at the left of every bar, and the duration under the clock.</div>
 
+  <label class="switch" for="time"><input id="time" type="checkbox" checked><span class="track"></span><span>Expected time</span></label>
+  <div class="hint">The expected time of the process as the component zero of the frontier, in front
+    of the impacts: a parallel node lasts as long as the longer of its regions, and the fast
+    forward pays each advance once.</div>
+
   <div class="row">
     <div>
       <label for="workers">Workers</label>
@@ -568,6 +573,7 @@ $('f').addEventListener('submit', async (e) => {
     workers: $('workers').value,
     ablation: $('ablation').value,
     limit: $('limit').value,
+    time: $('time').checked ? '1' : '0',
   });
   try {
     const r = await fetch('/api/frontier', { method: 'POST', body });
@@ -632,10 +638,13 @@ function render(d) {
 
 const d_names = (d) => d.names || d.components.map(c => `impact ${c}`);
 // the impacts are shown in alphabetical order of their names everywhere: the
-// table, the plots and the strategy panel read the same order
+// table, the plots and the strategy panel read the same order; the time,
+// when it is in, is the component zero and stays first
 const d_order = (d) => {
   const n = d_names(d);
-  return n.map((_, j) => j).sort((a, b) => n[a].localeCompare(n[b]));
+  const rest = n.map((_, j) => j).filter(j => !(d.time && j === 0))
+                .sort((a, b) => n[a].localeCompare(n[b]));
+  return d.time ? [0, ...rest] : rest;
 };
 const h = (t) => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let SELECTED = null;

@@ -68,6 +68,35 @@ pub fn tightness<'a>(store: &Store<'a, f64>, max_states: usize) -> Result<(f64, 
     Ok((du, dl, seen.len()))
 }
 
+/// The worst breach of the enclosure over every choice state the process can
+/// reach: the largest `L_s - min` and the largest `max - U_s` over the states
+/// and the components, both at most zero when the recursion encloses the
+/// exact optimum everywhere, and both zero up to rounding on the impacts,
+/// where the bounds are values. With the time in, the component zero is a
+/// bound and not a value, so the two numbers stay negative there.
+pub fn enclosure<'a>(store: &Store<'a, f64>, max_states: usize) -> Result<(f64, f64, usize), ExactError> {
+    let k = store.tree.k;
+    let initial = store.initial_histories()?;
+    let mut memo: HashMap<usize, (Vec<f64>, Vec<f64>)> = HashMap::new();
+    let mut seen: Vec<&ChoiceState<'_, f64>> = Vec::new();
+    for h in &initial {
+        value(store, h.cs, &mut memo, max_states)?;
+        collect(store, h.cs, &mut seen, &mut std::collections::HashSet::new())?;
+    }
+    let mut worst_low = f64::NEG_INFINITY;
+    let mut worst_high = f64::NEG_INFINITY;
+    for cs in &seen {
+        let key = *cs as *const ChoiceState<'_, f64> as usize;
+        if let Some((lo, hi)) = memo.get(&key) {
+            for c in 0..k {
+                worst_low = worst_low.max(cs.lower[c] - lo[c]);
+                worst_high = worst_high.max(hi[c] - cs.upper[c]);
+            }
+        }
+    }
+    Ok((worst_low, worst_high, seen.len()))
+}
+
 fn collect<'a>(
     store: &Store<'a, f64>,
     cs: &'a ChoiceState<'a, f64>,

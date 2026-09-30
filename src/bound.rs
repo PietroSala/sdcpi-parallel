@@ -14,6 +14,20 @@
 //! would be charged the impact of `a` although the only continuation is the
 //! closing move, which pays nothing.
 //!
+//! With the time as the component zero of the cost (`Tree::time`) the same
+//! traversal computes the two bounds of the time, which part from the ones of
+//! the impacts at two places. A task owes what is left of its duration,
+//! `D(v) - s(v)` when it runs and `D(v)` when it is idle, the progress having
+//! been paid by the fast forwards that made it; so the recursion does read the
+//! elapsed progress there, of the tasks alone, which a choice state carries in
+//! full. A parallel node lasts as long as the longer of its two regions, run by
+//! run, so the upper bound takes the sum of the two regions, the greater of two
+//! non-negative numbers being at most their sum, and the lower bound the
+//! greater of the two lower bounds, the greater of two numbers being at least
+//! each of them. The sequence, the choice and the nature cases are the ones of
+//! the impacts. The proof is in parallel-paper/semantics-time.tex of the paper
+//! repository.
+//!
 //! The arithmetic is the one of the type parameter, see `num.rs`: the
 //! floating-point runs of the paper and the exact runs of the frontier take the
 //! same traversal.
@@ -60,9 +74,16 @@ fn rec<N: Num>(t: &Tree, s: &[i8], v: u32, st: &mut Vec<N>) {
     let n = t.node(v);
     match n.kind {
         // A task owes its whole impact whatever its elapsed progress: the fast
-        // forward pays it at the moment it completes and nothing before.
+        // forward pays it at the moment it completes and nothing before. The
+        // time is the other way round, paid as it passes: a running task owes
+        // what is left of its duration, an idle one the whole of it.
         Kind::Task => {
-            let i = N::impact_of(t, v);
+            let mut i = N::impact_of(t, v);
+            if t.time {
+                let sv = s[v as usize];
+                let left = n.duration as i32 - if sv >= 0 { sv as i32 } else { 0 };
+                i[0] = N::from_u32(left as u32);
+            }
             st.extend(i.iter().cloned());
             st.extend(i);
         }
@@ -81,11 +102,13 @@ fn rec<N: Num>(t: &Tree, s: &[i8], v: u32, st: &mut Vec<N>) {
         }
 
         // A parallel node pays both of its branches, a branch that is done
-        // contributing the zero vector by the first case.
+        // contributing the zero vector by the first case; its time is the
+        // longer of the two, bounded by their sum from above and by the
+        // greater of the two lower bounds from below.
         Kind::Parallel => {
             rec(t, s, n.low, st);
             rec(t, s, n.high, st);
-            fold_sum(st, k);
+            fold_parallel(st, k, t.time);
         }
 
         Kind::Choice | Kind::Nature => {
@@ -128,6 +151,22 @@ fn fold_sum<N: Num>(st: &mut Vec<N>, k: usize) {
     let base = st.len() - 4 * k;
     for j in 0..2 * k {
         st[base + j] = st[base + j].add(&st[base + 2 * k + j]);
+    }
+    st.truncate(base + 2 * k);
+}
+
+/// `X(v) = X(low) + X(high)` on both bounds, except that with the time in the
+/// lower bound of the component zero is `max(L(low)_0, L(high)_0)`: the node
+/// lasts as long as the longer of its regions.
+#[inline]
+fn fold_parallel<N: Num>(st: &mut Vec<N>, k: usize, time: bool) {
+    let base = st.len() - 4 * k;
+    for j in 0..2 * k {
+        st[base + j] = if time && j == k {
+            st[base + j].max(&st[base + 2 * k + j])
+        } else {
+            st[base + j].add(&st[base + 2 * k + j])
+        };
     }
     st.truncate(base + 2 * k);
 }
