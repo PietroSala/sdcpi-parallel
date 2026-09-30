@@ -346,6 +346,23 @@ fn parse_reference(sc: &mut Scanner, ctx: &mut Ctx<'_>, depth: usize) -> Result<
     } else {
         name.clone()
     };
+    // a reference carries neither a duration nor impacts, it takes them from
+    // the saved process: `(@name, 3, {...})` is refused with the reason and
+    // not with a puzzle about a parenthesis
+    let mark = sc.at;
+    sc.skip();
+    if sc.text.get(sc.at) == Some(&b',') {
+        let mut j = sc.at + 1;
+        while j < sc.text.len() && sc.text[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if sc.text.get(j).map_or(false, |c| c.is_ascii_digit()) {
+            return Err(format!(
+                "@{name} is followed by a duration, and a reference carries neither a duration nor impacts, taking both from the saved process: write @{name} alone"
+            ));
+        }
+    }
+    sc.at = mark;
     if ctx.chain.iter().any(|c| c == &name) {
         let mut cycle = ctx.chain.clone();
         cycle.push(name.clone());
@@ -631,6 +648,15 @@ mod tests {
         assert_eq!(subs[2], ("5-3".to_string(), "Repair".to_string(), "Again".to_string(), 10, 1));
         // the impacts merged by name, in the order of first appearance
         assert!(p.yaml.starts_with("impact_names: [euro, hours]\n"));
+    }
+
+    #[test]
+    fn a_reference_with_a_duration_is_refused_with_the_reason() {
+        let mut r = store;
+        let e = to_yaml_with("(@Repair, 3, {euro: 1})", &mut r).unwrap_err();
+        assert!(e.contains("neither a duration nor impacts"), "{e}");
+        assert!(to_yaml_with("(@Repair), (Check, 1, {euro: 1})", &mut r).is_ok());
+        assert!(to_yaml_with("@Repair, @Ship", &mut r).is_ok());
     }
 
     #[test]
