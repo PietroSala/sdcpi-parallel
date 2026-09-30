@@ -15,6 +15,8 @@
 //! vertices and never cross anything, and the whole drawing is planar without
 //! any search.
 
+use std::collections::HashMap;
+
 use crate::num::decimal;
 use crate::tree::{Kind, Tree};
 
@@ -52,7 +54,30 @@ pub struct Style {
     /// The names beside what is drawn: the name of its impact at the left of
     /// every bar, and the duration under the clock.
     pub names: bool,
+    /// The identifier every node shows, by identifier, when the process is
+    /// an assembly of saved processes: `7-3` for the node 3 of the process
+    /// the leaf 7 refers to. The bare identifiers otherwise.
+    pub labels: Option<Vec<String>>,
+    /// The saved processes spliced into the drawing, each collapsed into one
+    /// box or expanded inside a bold one.
+    pub subs: Vec<SubBox>,
 }
+
+/// One saved process in the drawing.
+#[derive(Clone, Debug)]
+pub struct SubBox {
+    /// The identifier of its root in the assembled tree.
+    pub root: u32,
+    /// The identifier it shows, that of the leaf referring to it.
+    pub label: String,
+    /// The name it is saved under.
+    pub name: String,
+    /// The name it is shown under.
+    pub shown: String,
+    pub expanded: bool,
+}
+/// The square with the plus or the minus on the border of a sub-process.
+const TOGGLE: f64 = 14.0;
 const CLOCK_R: f64 = 7.0;
 /// The column the clock takes at the right of a box, and its height with
 /// the number under it.
@@ -88,12 +113,48 @@ struct Sizes {
     maxes: Vec<f64>,
     /// The longest duration over the tasks, for the clocks.
     longest: i16,
+    /// The sub-process rooted at a node, by the identifier of the root.
+    subs: HashMap<u32, usize>,
 }
 
 impl Sizes {
     fn detailed(&self) -> bool {
         self.style.detailed
     }
+    fn sub(&self, id: u32) -> Option<&SubBox> {
+        self.subs.get(&id).map(|&i| &self.style.subs[i])
+    }
+    /// A collapsed sub-process: drawn as one box, its tree left out.
+    fn collapsed(&self, id: u32) -> bool {
+        matches!(self.sub(id), Some(b) if !b.expanded)
+    }
+    /// An expanded sub-process: its tree inside a bold box.
+    fn expanded(&self, id: u32) -> bool {
+        matches!(self.sub(id), Some(b) if b.expanded)
+    }
+    /// The identifier a node shows.
+    fn label(&self, id: u32) -> String {
+        match &self.style.labels {
+            Some(l) => match l.get(id as usize) {
+                Some(s) if !s.is_empty() => s.clone(),
+                _ => id.to_string(),
+            },
+            None => id.to_string(),
+        }
+    }
+}
+
+/// The lines of the box of a collapsed sub-process: the name it is shown
+/// under, the saved process it refers to, and its identifier in the
+/// detailed drawing.
+fn sub_lines(s: &Sizes, id: u32) -> Vec<(&'static str, String)> {
+    let b = s.sub(id).expect("a collapsed sub-process");
+    let mut lines = vec![("name", b.shown.clone()), ("detail", format!("@{}", b.name))];
+    if s.style.detailed {
+        // the identifier of the leaf that refers to it, not of its root
+        lines.push(("detail id", format!("id {}", b.label)));
+    }
+    lines
 }
 
 /// The lines of a task box, the name first and in a larger type: the
@@ -103,7 +164,7 @@ fn task_box_lines(tree: &Tree, id: u32, s: &Sizes) -> (Vec<(&'static str, String
     let (name, duration, impacts) = task_lines(tree, id);
     let mut lines: Vec<(&'static str, String)> = vec![("name", name)];
     if s.style.detailed {
-        lines.push(("detail id", format!("id {id}")));
+        lines.push(("detail id", format!("id {}", s.label(id))));
     }
     if !s.style.clocks {
         lines.push(("detail", duration.clone()));
@@ -179,10 +240,13 @@ pub fn impact_names(tree: &Tree) -> Vec<String> {
 }
 
 /// How far inside its box the first and last element of a node sit: the
-/// margin of its dashed box in the detailed drawing, nothing otherwise and
-/// nothing for a task, which has no box around it.
+/// margin of the bold box of an expanded sub-process, of the dashed box of
+/// a region in the detailed drawing, nothing otherwise and nothing for a
+/// task or a collapsed sub-process, which have no box around them.
 fn inset(tree: &Tree, id: u32, s: &Sizes) -> f64 {
-    if s.detailed() && tree.node(id).kind != Kind::Task {
+    if s.collapsed(id) {
+        0.0
+    } else if s.expanded(id) || (s.detailed() && tree.node(id).kind != Kind::Task) {
         REGION_M
     } else {
         0.0
@@ -237,7 +301,20 @@ fn lead(tree: &Tree, id: u32) -> f64 {
 
 fn measure(tree: &Tree, id: u32, s: &mut Sizes) {
     let n = tree.node(id);
-    let m = if s.detailed() { REGION_M } else { 0.0 };
+    if s.collapsed(id) {
+        // one box, like a task, its tree left out
+        let lines = sub_lines(s, id);
+        let text = lines
+            .iter()
+            .map(|(class, text)| text_w(text, if *class == "name" { 13.0 } else { 11.0 }))
+            .fold(TASK_MIN_W, f64::max)
+            + 24.0;
+        s.w[id as usize] = text;
+        s.h[id as usize] = 16.0 + 14.0 * lines.len() as f64 + 6.0;
+        return;
+    }
+    // the margin of the box around the node, the same on every side
+    let m = inset(tree, id, s);
     let (w, h) = match n.kind {
         Kind::Task => {
             let (lines, _) = task_box_lines(tree, id, s);
@@ -253,22 +330,21 @@ fn measure(tree: &Tree, id: u32, s: &mut Sizes) {
             measure(tree, n.low, s);
             measure(tree, n.high, s);
             (
-                s.w[n.low as usize] + GAP + s.w[n.high as usize] + 2.0 * m,
-                s.h[n.low as usize].max(s.h[n.high as usize]) + 2.0 * m,
+                s.w[n.low as usize] + GAP + s.w[n.high as usize],
+                s.h[n.low as usize].max(s.h[n.high as usize]),
             )
         }
         Kind::Parallel | Kind::Choice | Kind::Nature => {
             measure(tree, n.low, s);
             measure(tree, n.high, s);
             (
-                GW + lead(tree, id) + s.w[n.low as usize].max(s.w[n.high as usize]) + GAP + GW
-                    + 2.0 * m,
-                s.h[n.low as usize] + VGAP + s.h[n.high as usize] + 2.0 * m,
+                GW + lead(tree, id) + s.w[n.low as usize].max(s.w[n.high as usize]) + GAP + GW,
+                s.h[n.low as usize] + VGAP + s.h[n.high as usize],
             )
         }
     };
-    s.w[id as usize] = w;
-    s.h[id as usize] = h;
+    s.w[id as usize] = w + 2.0 * m;
+    s.h[id as usize] = h + 2.0 * m;
 }
 
 fn xml(s: &str) -> String {
@@ -330,12 +406,62 @@ fn diamond(out: &mut String, id: u32, role: &str, kind: Kind, cx: f64, cy: f64) 
 
 /// The dashed box of a region in the detailed drawing, its identifier in
 /// the corner.
-fn region_box(out: &mut String, id: u32, x: f64, y: f64, w: f64, h: f64) {
+fn region_box(out: &mut String, id: u32, label: &str, x: f64, y: f64, w: f64, h: f64) {
     out.push_str(&format!(
         "<g class=\"region\" data-id=\"{id}\">\n<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"10\" ry=\"10\"/>\n\
-         <text class=\"rid\" x=\"{:.1}\" y=\"{:.1}\">{id}</text>\n</g>\n",
-        x + 7.0, y + 11.0
+         <text class=\"rid\" x=\"{:.1}\" y=\"{:.1}\">{}</text>\n</g>\n",
+        x + 7.0, y + 11.0, xml(label)
     ));
+}
+
+/// The square on the bottom border of a sub-process, with a plus when the
+/// process is collapsed and a minus when it is expanded: the page toggles
+/// the one for the other on a click.
+fn toggle(out: &mut String, label: &str, cx: f64, cy: f64, expanded: bool) {
+    let r = TOGGLE / 2.0;
+    out.push_str(&format!(
+        "<g class=\"toggle\" data-toggle=\"{}\"><title>{}</title>\n<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{TOGGLE}\" height=\"{TOGGLE}\" rx=\"2\"/>\n\
+         <text x=\"{cx:.1}\" y=\"{:.1}\">{}</text>\n</g>\n",
+        xml(label),
+        if expanded { "collapse" } else { "expand" },
+        cx - r, cy - r, cy + 4.5,
+        if expanded { "\u{2212}" } else { "+" }
+    ));
+}
+
+/// A collapsed sub-process: one box with the name it is shown under, the
+/// saved process it refers to, and the plus on its border.
+fn draw_collapsed(id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
+    let b = s.sub(id).expect("a collapsed sub-process");
+    let (w, h) = (s.w[id as usize], s.h[id as usize]);
+    out.push_str(&format!(
+        "<g class=\"sub collapsed\" data-id=\"{id}\" data-sub=\"{}\">\n<title>sub-process @{}</title>\n\
+         <rect class=\"box\" x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"9\" ry=\"9\"/>\n",
+        xml(&b.label), xml(&b.name)
+    ));
+    for (j, (class, text)) in sub_lines(s, id).iter().enumerate() {
+        out.push_str(&format!(
+            "<text class=\"{class}\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>\n",
+            x + w / 2.0,
+            y + 20.0 + 15.0 * j as f64,
+            xml(text)
+        ));
+    }
+    toggle(out, &b.label, x + w / 2.0, y + h, false);
+    out.push_str("</g>\n");
+}
+
+/// The bold box of an expanded sub-process, its identifier and its names in
+/// the corner, the minus on its border; its tree is drawn inside.
+fn sub_box(out: &mut String, id: u32, b: &SubBox, x: f64, y: f64, w: f64, h: f64) {
+    out.push_str(&format!(
+        "<g class=\"sub expanded\" data-id=\"{id}\" data-sub=\"{}\">\n\
+         <rect class=\"box\" x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"10\" ry=\"10\"/>\n\
+         <text class=\"rid\" x=\"{:.1}\" y=\"{:.1}\">{} · {} @{}</text>\n",
+        xml(&b.label), x + 7.0, y + 11.0, xml(&b.label), xml(&b.shown), xml(&b.name)
+    ));
+    toggle(out, &b.label, x + w / 2.0, y + h, true);
+    out.push_str("</g>\n");
 }
 
 /// Draws the node in its box, top-left at `(x, y)`, flow line at mid height.
@@ -343,16 +469,24 @@ fn region_box(out: &mut String, id: u32, x: f64, y: f64, w: f64, h: f64) {
 /// content sits inside the margin.
 fn draw(tree: &Tree, id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
     let n = tree.node(id);
+    if s.collapsed(id) {
+        draw_collapsed(id, x, y, s, out);
+        return;
+    }
     let (w, h) = (s.w[id as usize], s.h[id as usize]);
     let ay = y + h / 2.0;
     let m = inset(tree, id, s);
-    if n.kind != Kind::Task && s.detailed() {
-        region_box(out, id, x, y, w, h);
+    if let Some(b) = s.sub(id) {
+        // expanded: the bold box takes the place of the dashed one
+        sub_box(out, id, b, x, y, w, h);
+    } else if n.kind != Kind::Task && s.detailed() {
+        region_box(out, id, &s.label(id), x, y, w, h);
     }
     // the content of a region, inside its margin; the flow line is unmoved,
     // the margin being the same above and below
     let x = x + m;
     let y = y + m;
+    let (w, h) = (w - 2.0 * m, h - 2.0 * m);
     match n.kind {
         Kind::Task => {
             let (lines, tip) = task_box_lines(tree, id, s);
@@ -506,12 +640,14 @@ pub fn render(tree: &Tree, style: &Style) -> String {
         }
     }
     let longest = tree.tasks.iter().map(|&t| tree.node(t).duration).max().unwrap_or(0);
+    let subs: HashMap<u32, usize> = style.subs.iter().enumerate().map(|(i, b)| (b.root, i)).collect();
     let mut s = Sizes {
         w: vec![0.0; n],
         h: vec![0.0; n],
         style: style.clone(),
         maxes,
         longest,
+        subs,
     };
     measure(tree, tree.root, &mut s);
     let (w, h) = (s.w[tree.root as usize], s.h[tree.root as usize]);
@@ -551,6 +687,13 @@ pub fn render(tree: &Tree, style: &Style) -> String {
          .task .clock{{fill:#fff;stroke:#b9b7b1;stroke-width:1}}\
          .task .hand{{fill:#2a78d6;stroke:none}}\
          .legend text{{font-size:11px;fill:#0b0b0b}}\
+         .sub.collapsed .box{{fill:#fff;stroke:#0b0b0b;stroke-width:1.3}}\
+         .sub.expanded .box{{fill:none;stroke:#0b0b0b;stroke-width:2.2}}\
+         .sub .name{{font-size:13px;font-weight:600;fill:#0b0b0b}}\
+         .sub .detail{{font-size:11px;fill:#6e6e6e}}\
+         .sub .rid{{font-size:10.5px;fill:#0b0b0b;font-weight:600;font-family:ui-monospace,Menlo,monospace}}\
+         .toggle rect{{fill:#fff;stroke:#0b0b0b;stroke-width:1.2;cursor:pointer}}\
+         .toggle text{{font-size:12px;font-weight:600;fill:#0b0b0b;text-anchor:middle;pointer-events:none}}\
          </style>\n"
     ));
     if let Some(bars) = &style.bars {

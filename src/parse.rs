@@ -1,7 +1,7 @@
 //! The grammar of a process, and the writer of the instance file.
 //!
 //!     process ::= region ("," region)* | region op region
-//!     region  ::= task | "(" process ")"
+//!     region  ::= task | "(" process ")" | "@" saved ("[" shown "]")?
 //!     op      ::= "||" | "^" | "^[" prob "]"
 //!     task    ::= "(" name "," duration ")"
 //!             |   "(" name "," duration "," "{" impacts? "}" ")"
@@ -28,6 +28,19 @@
 //! Identifiers are assigned by the in-order traversal, one-based: every node
 //! of the low subtree numbers below its parent, every node of the high
 //! subtree above, which is the numbering the reader of `tree.rs` checks.
+//!
+//! A reference `@saved` stands for a saved process, spliced in place as a
+//! region, which the single-entry single-exit shape of every process allows;
+//! `@saved[shown]` shows it under another name. The saved text may refer to
+//! other saved processes in turn, to any depth, and never to itself through
+//! any chain: a cycle is an error. The impacts are merged by name, one table
+//! over the whole assembly. The engine sees the assembled process, with its
+//! identifiers in-order over the whole; beside them every node gets the
+//! identifier it shows, the own identifier in the process that wrote it
+//! prefixed by the identifiers of the references that led there, `7-3` for
+//! the node 3 of the process the leaf 7 refers to. Who resolves a name is
+//! the caller, through `to_yaml_with`; `to_yaml` resolves nothing and fails
+//! on a reference.
 
 /// One node of the parsed process, before identifiers exist.
 enum Ast {
@@ -43,10 +56,49 @@ enum Ast {
         low: Box<Ast>,
         high: Box<Ast>,
     },
+    /// A saved process spliced in place of a reference: one leaf of the
+    /// process that names it, a whole subtree of the assembled one.
+    Sub {
+        name: String,
+        shown: String,
+        inner: Box<Ast>,
+    },
 }
 
+#[derive(Debug)]
 pub struct Parsed {
     pub yaml: String,
+    /// The identifier every node shows, by assembled identifier, index 0 a
+    /// filler: the own identifier of the node in the process that wrote it,
+    /// prefixed by the identifiers of the references that led there.
+    pub labels: Vec<String>,
+    /// The saved processes spliced in, parents before their children.
+    pub subs: Vec<Sub>,
+}
+
+/// One saved process spliced into the assembly.
+#[derive(Clone, Debug)]
+pub struct Sub {
+    /// The assembled identifier of its root.
+    pub root: u32,
+    /// The identifier it shows, that of the leaf that refers to it.
+    pub label: String,
+    /// The name it is saved under.
+    pub name: String,
+    /// The name it is shown under, the saved name unless `[shown]` was given.
+    pub shown: String,
+    /// How many references lead to it, zero for one of the top process.
+    pub depth: usize,
+}
+
+/// What a parse carries beside the scanner: the table of the impact names,
+/// one over every process spliced in so that one name is one impact
+/// everywhere, the resolver of a reference, and the chain of the references
+/// being resolved, against a cycle.
+struct Ctx<'r> {
+    names: Vec<String>,
+    resolver: Option<&'r mut dyn FnMut(&str) -> Result<String, String>>,
+    chain: Vec<String>,
 }
 
 struct Scanner<'a> {
@@ -124,6 +176,52 @@ impl<'a> Scanner<'a> {
         Ok(String::from_utf8_lossy(&self.text[start..self.at]).into_owned())
     }
 
+    /// The name of a saved process after `@`: letters, digits, `_`, `.` and
+    /// `-`, or anything at all between double quotes.
+    fn refname(&mut self) -> Result<String, String> {
+        let start = self.at;
+        if self.text.get(self.at) == Some(&b'"') {
+            self.at += 1;
+            let from = self.at;
+            while self.at < self.text.len() && self.text[self.at] != b'"' {
+                self.at += 1;
+            }
+            if self.at >= self.text.len() {
+                return Err(format!("the quoted name at byte {start} never closes"));
+            }
+            let name = String::from_utf8_lossy(&self.text[from..self.at]).trim().to_string();
+            self.at += 1;
+            if name.is_empty() {
+                return Err(format!("the quoted name at byte {start} is empty"));
+            }
+            return Ok(name);
+        }
+        while self.at < self.text.len()
+            && (self.text[self.at].is_ascii_alphanumeric()
+                || matches!(self.text[self.at], b'_' | b'.' | b'-'))
+        {
+            self.at += 1;
+        }
+        if self.at == start {
+            return Err(format!("expected the name of a saved process after @ at byte {start}"));
+        }
+        Ok(String::from_utf8_lossy(&self.text[start..self.at]).into_owned())
+    }
+
+    /// The text up to the closing bracket of `[shown]`, the bracket consumed.
+    fn until_bracket(&mut self) -> Result<String, String> {
+        let start = self.at;
+        while self.at < self.text.len() && self.text[self.at] != b']' && self.text[self.at] != b'\n' {
+            self.at += 1;
+        }
+        if self.text.get(self.at) != Some(&b']') {
+            return Err(format!("the [shown] name opened at byte {start} never closes on its line"));
+        }
+        let shown = String::from_utf8_lossy(&self.text[start..self.at]).trim().to_string();
+        self.at += 1;
+        Ok(shown)
+    }
+
     fn number(&mut self) -> Result<f64, String> {
         self.skip();
         let start = self.at;
@@ -184,10 +282,10 @@ const MAX_DEPTH: usize = 2000;
 
 fn parse_process(
     sc: &mut Scanner,
-    names: &mut Vec<String>,
+    ctx: &mut Ctx<'_>,
     depth: usize,
 ) -> Result<Ast, String> {
-    let mut low = parse_region(sc, names, depth)?;
+    let mut low = parse_region(sc, ctx, depth)?;
     sc.skip();
     if sc.text.get(sc.at) == Some(&b',') {
         // a chain of sequences, folded to the left; every fold deepens the
@@ -199,7 +297,7 @@ fn parse_process(
             if depth + folds > MAX_DEPTH {
                 return Err(format!("the term is deeper than {MAX_DEPTH}, parentheses and sequence folds together"));
             }
-            let high = parse_region(sc, names, depth + folds)?;
+            let high = parse_region(sc, ctx, depth + folds)?;
             low = Ast::Op {
                 kind: "sequence",
                 prob: None,
@@ -231,22 +329,65 @@ fn parse_process(
         // parenthesised region may wrap another
         return Ok(low);
     };
-    let high = parse_region(sc, names, depth)?;
+    let high = parse_region(sc, ctx, depth)?;
     Ok(Ast::Op { kind, prob, low: Box::new(low), high: Box::new(high) })
+}
+
+/// A reference `@saved` or `@saved[shown]`: the saved text is parsed in
+/// place, through the resolver, its impacts into the one table, its
+/// references resolved in turn.
+fn parse_reference(sc: &mut Scanner, ctx: &mut Ctx<'_>, depth: usize) -> Result<Ast, String> {
+    sc.eat(b'@')?;
+    let name = sc.refname()?;
+    let shown = if sc.text.get(sc.at) == Some(&b'[') {
+        sc.at += 1;
+        let shown = sc.until_bracket()?;
+        if shown.is_empty() { name.clone() } else { shown }
+    } else {
+        name.clone()
+    };
+    if ctx.chain.iter().any(|c| c == &name) {
+        let mut cycle = ctx.chain.clone();
+        cycle.push(name.clone());
+        return Err(format!("the references form a cycle: {}", cycle.join(" > ")));
+    }
+    let text = match ctx.resolver.as_mut() {
+        Some(resolve) => resolve(&name)?,
+        None => {
+            return Err(format!(
+                "the process refers to @{name}, and a reference is resolved against the saved processes of the page alone"
+            ))
+        }
+    };
+    ctx.chain.push(name.clone());
+    let mut inner = Scanner::new(&text);
+    let ast = parse_process(&mut inner, ctx, depth + 1)
+        .map_err(|e| format!("in the saved process {name}: {e}"))?;
+    inner.skip();
+    if inner.at != inner.text.len() {
+        return Err(format!("in the saved process {name}: trailing input at byte {}", inner.at));
+    }
+    ctx.chain.pop();
+    Ok(Ast::Sub { name, shown, inner: Box::new(ast) })
 }
 
 fn parse_region(
     sc: &mut Scanner,
-    names: &mut Vec<String>,
+    ctx: &mut Ctx<'_>,
     depth: usize,
 ) -> Result<Ast, String> {
     if depth > MAX_DEPTH {
         return Err(format!("the term is deeper than {MAX_DEPTH}, parentheses and sequence folds together"));
     }
+    // a reference is a region of its own, with no parentheses of its own
+    if sc.peek() == Some(b'@') {
+        return parse_reference(sc, ctx, depth);
+    }
     sc.eat(b'(')?;
-    // a task opens on a name, a wrapped process on another parenthesis
-    if sc.peek() == Some(b'(') {
-        let inner = parse_process(sc, names, depth + 1)?;
+    // a task opens on a name, a wrapped process on another parenthesis or on
+    // a reference
+    if matches!(sc.peek(), Some(b'(') | Some(b'@')) {
+        let inner = parse_process(sc, ctx, depth + 1)?;
         sc.eat(b')')?;
         return Ok(inner);
     }
@@ -272,11 +413,11 @@ fn parse_region(
                         "the impact {iname} of {name} is {v}, and the map names only what is strictly positive; leave a zero out"
                     ));
                 }
-                let idx = match names.iter().position(|n| n == &iname) {
+                let idx = match ctx.names.iter().position(|n| n == &iname) {
                     Some(i) => i,
                     None => {
-                        names.push(iname.clone());
-                        names.len() - 1
+                        ctx.names.push(iname.clone());
+                        ctx.names.len() - 1
                     }
                 };
                 if impact.iter().any(|(i, _)| *i == idx) {
@@ -298,6 +439,7 @@ fn parse_region(
 
 fn count(ast: &Ast) -> (u32, u32) {
     match ast {
+        Ast::Sub { inner, .. } => count(inner),
         Ast::Task { .. } => (1, 1),
         Ast::Op { low, high, .. } => {
             let (nl, tl) = count(low);
@@ -318,6 +460,8 @@ fn fmt_number(v: f64) -> String {
 fn emit(ast: &Ast, k: usize, next: &mut u32, indent: usize, out: &mut String) {
     let pad = "  ".repeat(indent);
     match ast {
+        // a spliced process is its tree: the engine never sees the seam
+        Ast::Sub { inner, .. } => emit(inner, k, next, indent, out),
         Ast::Task { name, duration, impact } => {
             let mut v = vec![0.0f64; k];
             for (i, x) in impact {
@@ -354,16 +498,63 @@ fn next_id(next: &mut u32) -> u32 {
     *next
 }
 
-/// Parses the grammar and writes the instance file, identifiers in-order and
-/// one-based, `impact_names` in the order of first appearance.
-pub fn to_yaml(text: &str) -> Result<Parsed, String> {
+/// The identifier every node shows and the sub-processes spliced in, by one
+/// walk that numbers the assembled tree exactly as `emit` does, in-order,
+/// and beside it every process by its own nodes, a spliced process counting
+/// one leaf of the process that refers to it.
+fn walk(
+    ast: &Ast,
+    next: &mut u32,
+    own: &mut u32,
+    prefix: &str,
+    depth: usize,
+    labels: &mut Vec<String>,
+    subs: &mut Vec<Sub>,
+) -> u32 {
+    match ast {
+        Ast::Task { .. } => {
+            *next += 1;
+            *own += 1;
+            labels[*next as usize] = format!("{prefix}{own}");
+            *next
+        }
+        Ast::Op { low, high, .. } => {
+            walk(low, next, own, prefix, depth, labels, subs);
+            *next += 1;
+            *own += 1;
+            let id = *next;
+            labels[id as usize] = format!("{prefix}{own}");
+            walk(high, next, own, prefix, depth, labels, subs);
+            id
+        }
+        Ast::Sub { name, shown, inner } => {
+            *own += 1;
+            let label = format!("{prefix}{own}");
+            let at = subs.len();
+            subs.push(Sub {
+                root: 0,
+                label: label.clone(),
+                name: name.clone(),
+                shown: shown.clone(),
+                depth,
+            });
+            let mut inner_own = 0u32;
+            let root = walk(inner, next, &mut inner_own, &format!("{label}-"), depth + 1, labels, subs);
+            subs[at].root = root;
+            root
+        }
+    }
+}
+
+fn parse_all(text: &str, resolver: Option<&mut dyn FnMut(&str) -> Result<String, String>>) -> Result<Parsed, String> {
     let mut sc = Scanner::new(text);
-    let mut names: Vec<String> = Vec::new();
-    let ast = parse_process(&mut sc, &mut names, 0)?;
+    let mut ctx = Ctx { names: Vec::new(), resolver, chain: Vec::new() };
+    let ast = parse_process(&mut sc, &mut ctx, 0)?;
     sc.skip();
     if sc.at != sc.text.len() {
         return Err(format!("trailing input at byte {}", sc.at));
     }
+    let names = ctx.names;
     if names.is_empty() {
         return Err("no impact is named anywhere; name at least one, the dimension being at least one".to_string());
     }
@@ -377,5 +568,79 @@ pub fn to_yaml(text: &str) -> Result<Parsed, String> {
     out.push_str("tree:\n");
     let mut next = 0u32;
     emit(&ast, k, &mut next, 1, &mut out);
-    Ok(Parsed { yaml: out })
+    let mut labels = vec![String::new(); nodes as usize + 1];
+    let mut subs = Vec::new();
+    let (mut next, mut own) = (0u32, 0u32);
+    walk(&ast, &mut next, &mut own, "", 0, &mut labels, &mut subs);
+    debug_assert_eq!(next, nodes);
+    Ok(Parsed { yaml: out, labels, subs })
+}
+
+/// Parses the grammar and writes the instance file, identifiers in-order and
+/// one-based, `impact_names` in the order of first appearance. A reference
+/// to a saved process is an error here: see `to_yaml_with`.
+pub fn to_yaml(text: &str) -> Result<Parsed, String> {
+    parse_all(text, None)
+}
+
+/// The same, with every reference `@saved` resolved through `resolver`, which
+/// gives the text saved under a name, and spliced in place.
+pub fn to_yaml_with(
+    text: &str,
+    resolver: &mut dyn FnMut(&str) -> Result<String, String>,
+) -> Result<Parsed, String> {
+    parse_all(text, Some(resolver))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store(name: &str) -> Result<String, String> {
+        match name {
+            "Repair" => Ok("( (Mend, 3, {euro: 20}) ^ (Redo, 2, {euro: 40, hours: 6}) )".to_string()),
+            "Ship" => Ok("(Pack, 1, {hours: 1}) , @Repair[Again]".to_string()),
+            "Loop" => Ok("(A, 1, {x: 1}) , @Loop".to_string()),
+            _ => Err(format!("no process is saved as {name:?}")),
+        }
+    }
+
+    #[test]
+    fn a_reference_splices_the_saved_process_and_labels_its_nodes() {
+        let mut r = store;
+        let p = to_yaml_with("( (Intake, 1, {euro: 10}) , @Repair[Fix] , @Ship )", &mut r).unwrap();
+        // the assembled tree: Intake(1) seq(2) [Mend(3) choice(4) Redo(5)] seq(6) [Pack(7) seq(8) [Mend(9) choice(10) Redo(11)]]
+        assert!(p.yaml.contains("nodes: 11"));
+        assert_eq!(p.labels[1], "1");
+        assert_eq!(p.labels[2], "2");
+        assert_eq!(p.labels[3], "3-1");
+        assert_eq!(p.labels[4], "3-2");
+        assert_eq!(p.labels[5], "3-3");
+        assert_eq!(p.labels[6], "4");
+        assert_eq!(p.labels[7], "5-1");
+        assert_eq!(p.labels[8], "5-2");
+        assert_eq!(p.labels[9], "5-3-1");
+        assert_eq!(p.labels[11], "5-3-3");
+        let subs: Vec<(String, String, String, u32, usize)> = p
+            .subs
+            .iter()
+            .map(|s| (s.label.clone(), s.name.clone(), s.shown.clone(), s.root, s.depth))
+            .collect();
+        assert_eq!(subs[0], ("3".to_string(), "Repair".to_string(), "Fix".to_string(), 4, 0));
+        assert_eq!(subs[1], ("5".to_string(), "Ship".to_string(), "Ship".to_string(), 8, 0));
+        assert_eq!(subs[2], ("5-3".to_string(), "Repair".to_string(), "Again".to_string(), 10, 1));
+        // the impacts merged by name, in the order of first appearance
+        assert!(p.yaml.starts_with("impact_names: [euro, hours]\n"));
+    }
+
+    #[test]
+    fn a_cycle_and_an_unresolved_reference_are_errors() {
+        let mut r = store;
+        let e = to_yaml_with("@Loop", &mut r).unwrap_err();
+        assert!(e.contains("cycle"), "{e}");
+        let e = to_yaml("(A, 1, {x: 1}) , @Repair").unwrap_err();
+        assert!(e.contains("saved processes"), "{e}");
+        let e = to_yaml_with("@Nowhere", &mut r).unwrap_err();
+        assert!(e.contains("Nowhere"), "{e}");
+    }
 }

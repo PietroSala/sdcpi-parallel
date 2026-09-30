@@ -85,11 +85,25 @@ Instances can be written directly, in a grammar smaller than the YAML:
 
 ```
 process ::= region ("," region)* | region op region
-region  ::= task | "(" process ")"
+region  ::= task | "(" process ")" | "@" saved ("[" shown "]")?
 op      ::= "||" | "^" | "^[" prob "]"
 task    ::= "(" name "," duration ")"
         |   "(" name "," duration "," "{" name ":" value "," ... "}" ")"
 ```
+
+A region may be `@saved`, a process saved on the page under that name,
+spliced in place: every process is a single-entry single-exit region, so a
+saved one stands wherever a task would. `@saved[shown]` draws it under
+another name. A saved process may refer to others, to any depth, and never
+to itself through any chain, a cycle being an error; the impacts are merged
+by name, one table over the whole assembly. The engine sees the assembled
+process with its identifiers in-order over the whole; the page shows every
+node under the identifier of the process that wrote it, prefixed by the
+identifiers of the references that led there, `7-3` for the node 3 of the
+process the leaf 7 refers to, and draws every saved process as one box
+until it is expanded. On the command line `parse --saved F` resolves the
+references against the store `F` the page writes, `sdcpi-processes.json` by
+default.
 
 A comma between regions is a sequence, as in the grammar of the model,
 and it associates to the left: `A, B, C` means `(A, B), C`, the tree

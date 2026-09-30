@@ -154,6 +154,15 @@
   .zoom button:hover { background: #f1f0ec; }
   .zoom button.fit { width: auto; padding: 0 8px; font-size: 11.5px; }
   #dnote { color: #b03a2e; font-size: 11.5px; margin-top: 4px; min-height: 1em; }
+  /* the tree of the sub-processes, one row each, indented by its depth */
+  .subhead { display: flex; gap: 6px; margin: 6px 0 4px; }
+  .subhead button { width: auto; margin: 0; padding: 3px 9px; font-size: 12px; }
+  .subrow { display: flex; align-items: center; gap: 7px; padding: 3px 0; font-size: 12.5px; }
+  .subrow button.tg { flex: none; width: 22px; height: 20px; margin: 0; padding: 0; font-size: 13px; line-height: 1;
+                      background: #fff; color: var(--ink); border: 1px solid var(--line); border-radius: 4px; }
+  .subrow code { color: var(--muted); }
+  .subrow .muted { color: var(--muted); }
+  #diagram svg .toggle { cursor: pointer; }
   .foot { color: var(--muted); font-size: 11.5px; margin-top: 16px; }
 </style>
 
@@ -189,6 +198,15 @@
   <details id="savedpanel">
     <summary>Saved processes</summary>
     <div id="savedbox" class="hint">Nothing saved yet. Name the process above its text and press Save.</div>
+  </details>
+
+  <details id="subpanel" hidden>
+    <summary>Sub-processes</summary>
+    <div class="subhead"><button type="button" id="subopen" class="small ghost">Expand all</button>
+      <button type="button" id="subclose" class="small ghost">Collapse all</button></div>
+    <div id="subbox"></div>
+    <div class="hint">The saved processes this text refers to with <code>@name</code>, each drawn as one box
+      until it is expanded, here or with the plus on its border.</div>
   </details>
 
   <label for="proc">Process</label>
@@ -475,16 +493,19 @@ function refreshDiagram() {
     // the impacts not to draw, the ones unchecked among the chips: a process
     // just loaded has names the chips do not know yet, and is drawn whole
     body.set('hide', chipInputs.filter(c => !c.checked).map(c => c.value).join(','));
+    // the sub-processes to draw expanded, by the identifier they show
+    body.set('expand', [...EXPANDED].join(','));
     try {
       const r = await fetch('/api/svg', { method: 'POST', body });
       const d = await r.json();
       if (d.svg) {
         chips(d.impacts || []);
+        subsPanel(d.subs || []);
         $('diagram').innerHTML = d.svg
           + '<div class="zoom"><button type="button" title="zoom in">+</button>'
           + '<button type="button" title="zoom out">−</button>'
           + '<button type="button" class="fit" title="fit the whole drawing">fit</button></div>';
-        const view = viewport($('diagram').querySelector('svg'));
+        const view = viewport($('diagram').querySelector('svg'), toggleSub);
         const [zin, zout, fit] = $('diagram').querySelectorAll('.zoom button');
         zin.addEventListener('click', view.zoomIn);
         zout.addEventListener('click', view.zoomOut);
@@ -498,6 +519,37 @@ function refreshDiagram() {
     } catch (e) { /* the server is away; the drawing stays */ }
   }, 250);
 }
+// The sub-processes of the text, the saved processes it refers to: every one
+// starts collapsed, one box in the drawing, and is expanded from the panel
+// or from the plus on its border. A row of the panel is shown when every
+// sub-process above it is expanded, as a folder shows its content.
+let EXPANDED = new Set();
+let SUBS = [];
+function toggleSub(label) {
+  if (EXPANDED.has(label)) EXPANDED.delete(label); else EXPANDED.add(label);
+  refreshDiagram();
+}
+function subsPanel(subs) {
+  SUBS = subs;
+  const panel = $('subpanel');
+  if (!subs.length) { panel.hidden = true; return; }
+  panel.hidden = false;
+  const above = (label) => {   // the identifiers of the sub-processes that contain this one
+    const parts = label.split('-'), out = [];
+    for (let i = 1; i < parts.length; i++) out.push(parts.slice(0, i).join('-'));
+    return out;
+  };
+  $('subbox').innerHTML = subs
+    .filter(s => above(s.label).every(a => EXPANDED.has(a)))
+    .map(s => `<div class="subrow" style="padding-left:${s.depth * 16}px">`
+      + `<button type="button" class="tg" data-toggle="${h(s.label)}" title="${s.expanded ? 'collapse' : 'expand'}">${s.expanded ? '−' : '+'}</button>`
+      + `<code>${h(s.label)}</code><span>${h(s.shown)}</span><span class="muted">@${h(s.name)}</span></div>`)
+    .join('');
+  $('subbox').querySelectorAll('button.tg').forEach(b => b.addEventListener('click', () => toggleSub(b.dataset.toggle)));
+}
+$('subopen').addEventListener('click', () => { SUBS.forEach(s => EXPANDED.add(s.label)); refreshDiagram(); });
+$('subclose').addEventListener('click', () => { EXPANDED.clear(); refreshDiagram(); });
+
 // A frontier belongs to the text it was computed from: when the text changes,
 // by a keystroke or a load, the results of the text before leave the page.
 function invalidate() {
@@ -510,7 +562,7 @@ $('proc').addEventListener('input', () => { invalidate(); refreshDiagram(); refr
 // Zoom and pan on a drawing: the wheel zooms about the pointer, a drag pans,
 // the buttons zoom about the centre and fit the whole drawing again. The
 // drawing is scaled by its viewBox, so nothing is redrawn.
-function viewport(svg) {
+function viewport(svg, onToggle) {
   const home = svg.getAttribute('viewBox').split(/\s+/).map(Number);
   let vb = home.slice();
   svg.removeAttribute('width'); svg.removeAttribute('height');
@@ -537,22 +589,31 @@ function viewport(svg) {
     const [cx, cy] = at(ev);
     zoom(Math.exp(-ev.deltaY * 0.002), cx, cy);
   }, { passive: false });
-  let drag = null;
+  // a press on the plus or the minus of a sub-process, released without a
+  // drag, toggles it; the capture would otherwise keep the click from it
+  let drag = null, origin = null, pressed = null, moved = false;
   svg.addEventListener('pointerdown', (ev) => {
     if (ev.button !== 0) return;
+    pressed = ev.target.closest ? ev.target.closest('[data-toggle]') : null;
+    moved = false;
+    origin = [ev.clientX, ev.clientY];
     drag = [ev.clientX, ev.clientY];
     svg.setPointerCapture(ev.pointerId);
     svg.style.cursor = 'grabbing';
   });
   svg.addEventListener('pointermove', (ev) => {
     if (!drag) return;
+    if (Math.abs(ev.clientX - origin[0]) + Math.abs(ev.clientY - origin[1]) > 3) moved = true;
     const s = scale();
     vb[0] -= (ev.clientX - drag[0]) / s;
     vb[1] -= (ev.clientY - drag[1]) / s;
     drag = [ev.clientX, ev.clientY];
     apply();
   });
-  const release = () => { drag = null; svg.style.cursor = 'grab'; };
+  const release = () => {
+    if (pressed && !moved && onToggle) onToggle(pressed.dataset.toggle);
+    pressed = null; drag = null; svg.style.cursor = 'grab';
+  };
   svg.addEventListener('pointerup', release);
   svg.addEventListener('pointercancel', release);
   const centre = () => [vb[0] + vb[2] / 2, vb[1] + vb[3] / 2];
@@ -830,7 +891,8 @@ let SELECTED = null;
 // identifier for a region, which is what tells two tasks of one name apart.
 function label(n) {
   if (!$('detail').checked) return h(n.name);
-  return n.task ? `${h(n.name)}<code>(${n.id})</code>` : `<code>${n.id}</code>`;
+  const id = n.label || n.id;
+  return n.task ? `${h(n.name)}<code>(${h(id)})</code>` : `<code>${h(id)}</code>`;
 }
 function sentence(st) {
   return st.after.length

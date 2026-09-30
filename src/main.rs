@@ -68,7 +68,7 @@ sdcpi  on-the-fly strategy synthesis for BPMN+CPI processes
 
   sdcpi determine <instance> (--B a,b,... | --B-file F) [options]
   sdcpi pareto    <instance> [--precision E] [--obdd-library L] [options]
-  sdcpi parse     (<process> | --file F) [--out F]
+  sdcpi parse     (<process> | --file F) [--saved F] [--out F]
   sdcpi to_prism  <instance> [--encode-history true|false] [--out F]
   sdcpi to_svg    <instance> [--detail true|false] [--tooltips true|false] [--bars all|a,b,...]
                   [--clocks true|false] [--names true|false] [--out F]
@@ -92,7 +92,9 @@ the grammar of parse, written inline or in the file
   , sequence, || parallel, ^ a choice, ^[p] a nature node taking its left
   operand with probability p in (0,1); durations positive integers; the map
   names only the impacts that are strictly positive, {} and no map both
-  meaning all zero; # comments to end of line. The instance file is written
+  meaning all zero; # comments to end of line. A region may be @saved, or
+  @saved[shown], a process of the store of the page (--saved F, the file
+  sdcpi serve writes) spliced in place, to any depth and never in a cycle. The instance file is written
   to standard output, identifiers in-order, impact_names in the order the
   names first appear, the vectors mapped by that order.
 
@@ -475,7 +477,24 @@ fn cmd_parse(args: &[String]) -> i32 {
         (None, Some(_)) => args.positional.join(" "),
         _ => return fail("give the process inline or through --file, not both and not neither"),
     };
-    match parse::to_yaml(&text) {
+    // a reference @saved is resolved against a store of the page, --saved F
+    let parsed = match args.flag("saved") {
+        None => parse::to_yaml(&text),
+        Some(f) => match serve::read_store(std::path::Path::new(f)) {
+            Err(e) => return fail(&e),
+            Ok(entries) => {
+                let mut resolve = |name: &str| -> Result<String, String> {
+                    entries
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, t)| t.clone())
+                        .ok_or_else(|| format!("no process is saved as {name:?} in {f}"))
+                };
+                parse::to_yaml_with(&text, &mut resolve)
+            }
+        },
+    };
+    match parsed {
         Ok(p) => match args.flag("out") {
             Some(path) => match std::fs::write(path, &p.yaml) {
                 Ok(()) => 0,
@@ -618,7 +637,7 @@ fn cmd_to_svg(args: &[String]) -> i32 {
         Some("false") => false,
         Some(v) => return fail(&format!("--names wants true or false, found {v:?}")),
     };
-    let text = svg::render(&tree, &svg::Style { detailed, tooltips, bars, clocks, names });
+    let text = svg::render(&tree, &svg::Style { detailed, tooltips, bars, clocks, names, ..Default::default() });
     match args.flag("out") {
         Some(p) => match std::fs::write(p, &text) {
             Ok(()) => 0,

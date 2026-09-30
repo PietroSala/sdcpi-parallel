@@ -160,7 +160,7 @@ static SAVING: Mutex<()> = Mutex::new(());
 /// The store read back: a flat JSON object of strings, name to text, which
 /// is all the store holds, read by a parser of its own since the crate
 /// carries none. Anything else in the file is an error.
-fn read_store(path: &std::path::Path) -> Result<Vec<(String, String)>, String> {
+pub(crate) fn read_store(path: &std::path::Path) -> Result<Vec<(String, String)>, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -378,11 +378,11 @@ fn serve_one(mut stream: TcpStream, bench: &Bench) {
             send(&mut stream, 200, "application/json", &out)
         }
         ("POST", "/api/frontier") => {
-            let out = frontier(&body);
+            let out = frontier(&body, bench);
             send(&mut stream, 200, "application/json", &out)
         }
         ("POST", "/api/svg") => {
-            let out = diagram(&body);
+            let out = diagram(&body, bench);
             send(&mut stream, 200, "application/json", &out)
         }
         _ => send(&mut stream, 404, "text/plain; charset=utf-8", "no such page\n"),
@@ -509,12 +509,39 @@ fn decision(tree: &Tree, history: &[u32], action: u32) -> String {
 
 /// One node as the page reads it: the identifier, the name the sentences
 /// use, and whether the node is a task or a region.
-fn node_json(tree: &Tree, id: u32) -> String {
+fn node_json(tree: &Tree, id: u32, labels: &[String]) -> String {
+    let label = match labels.get(id as usize) {
+        Some(l) if !l.is_empty() => l.clone(),
+        _ => id.to_string(),
+    };
     format!(
-        "{{\"id\": {id}, \"name\": {}, \"task\": {}}}",
+        "{{\"id\": {id}, \"label\": {}, \"name\": {}, \"task\": {}}}",
+        esc(&label),
         esc(&name_of(tree, id)),
         tree.node(id).kind == Kind::Task
     )
+}
+
+/// The saved processes, read under the lock that guards the store.
+fn store_entries(bench: &Bench) -> Result<Vec<(String, String)>, String> {
+    let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+    read_store(&bench.saved)
+}
+
+/// The process as the parser of the crate reads it, every reference to a
+/// saved process spliced in place: the instance the engine sees, and beside
+/// it the identifier every node shows and the sub-processes. The store is
+/// read only when the text refers to it.
+fn assemble(text: &str, bench: &Bench) -> Result<parse::Parsed, String> {
+    let entries = if text.contains('@') { store_entries(bench)? } else { Vec::new() };
+    let mut resolve = |name: &str| -> Result<String, String> {
+        entries
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, t)| t.clone())
+            .ok_or_else(|| format!("no process is saved as {name:?}"))
+    };
+    parse::to_yaml_with(text, &mut resolve).map_err(|e| format!("the process does not parse: {e}"))
 }
 
 /// The name of a node. A task carries its own; an internal node carries none
@@ -575,7 +602,9 @@ fn hello(bench: &Bench) -> String {
             "(name, duration, {impact: value, ...}) is a task, the map naming only the \
              impacts that are not zero; , is a sequence, || a parallel, ^ a choice of \
              the controller and ^[p] one of nature taking its left operand with \
-             probability p; brackets group."
+             probability p; brackets group. @saved refers to a process saved on this \
+             page, spliced in place as a region, and @saved[shown] shows it under \
+             another name; a saved process may refer to others, never to itself."
         ),
         esc(EXAMPLE),
         bench.available(),
@@ -679,19 +708,52 @@ fn err(message: &str) -> String {
 
 /// The diagram of the process as the page has it at the moment, drawn as
 /// SVG; parsed by the parser of the crate and nothing else.
-fn diagram(body: &str) -> String {
+fn diagram(body: &str, bench: &Bench) -> String {
     let text = match field(body, "process") {
         Some(t) if !t.trim().is_empty() => t,
         _ => return err("no process was given"),
     };
-    let yaml = match parse::to_yaml(&text) {
-        Ok(p) => p.yaml,
-        Err(e) => return err(&format!("the process does not parse: {e}")),
+    let parsed = match assemble(&text, bench) {
+        Ok(p) => p,
+        Err(e) => return err(&e),
     };
-    let tree = match Tree::parse(&yaml) {
+    let tree = match Tree::parse(&parsed.yaml) {
         Ok(t) => t,
         Err(e) => return err(&format!("the instance does not read: {e}")),
     };
+    // the sub-processes the page has expanded, by the identifier they show;
+    // everything starts collapsed
+    let expanded: Vec<String> = field(body, "expand")
+        .unwrap_or_default()
+        .split(',')
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let subs: Vec<crate::svg::SubBox> = parsed
+        .subs
+        .iter()
+        .map(|s| crate::svg::SubBox {
+            root: s.root,
+            label: s.label.clone(),
+            name: s.name.clone(),
+            shown: s.shown.clone(),
+            expanded: expanded.contains(&s.label),
+        })
+        .collect();
+    let listed_subs: Vec<String> = parsed
+        .subs
+        .iter()
+        .map(|s| {
+            format!(
+                "{{\"label\": {}, \"name\": {}, \"shown\": {}, \"depth\": {}, \"expanded\": {}}}",
+                esc(&s.label),
+                esc(&s.name),
+                esc(&s.shown),
+                s.depth,
+                expanded.contains(&s.label)
+            )
+        })
+        .collect();
     let detailed = matches!(field(body, "detail").as_deref(), Some("1") | Some("true"));
     let tooltips = matches!(field(body, "tooltips").as_deref(), Some("1") | Some("true"));
     // the bars: the impacts named in `show`, alphabetical, all of them when
@@ -719,18 +781,27 @@ fn diagram(body: &str) -> String {
     };
     let clocks = matches!(field(body, "clocks").as_deref(), Some("1") | Some("true"));
     let show_names = matches!(field(body, "names").as_deref(), Some("1") | Some("true"));
-    let style = crate::svg::Style { detailed, tooltips, bars, clocks, names: show_names };
+    let style = crate::svg::Style {
+        detailed,
+        tooltips,
+        bars,
+        clocks,
+        names: show_names,
+        labels: if parsed.subs.is_empty() { None } else { Some(parsed.labels.clone()) },
+        subs,
+    };
     let listed: Vec<String> = order.iter().map(|&j| esc(&names[j])).collect();
     format!(
-        "{{\"svg\": {}, \"impacts\": [{}]}}",
+        "{{\"svg\": {}, \"impacts\": [{}], \"subs\": [{}]}}",
         esc(&crate::svg::render(&tree, &style)),
-        listed.join(", ")
+        listed.join(", "),
+        listed_subs.join(", ")
     )
 }
 
 /// Runs one search and answers with the frontier, every point with the
 /// strategy that attains it.
-fn frontier(body: &str) -> String {
+fn frontier(body: &str, bench: &Bench) -> String {
     let text = match field(body, "process") {
         Some(t) if !t.trim().is_empty() => t,
         _ => return err("no process was given"),
@@ -742,13 +813,14 @@ fn frontier(body: &str) -> String {
         .unwrap_or(30.0)
         .clamp(1.0, MAX_LIMIT);
 
-    // the process as the parser of the crate reads it, then the tree; nothing
-    // touches the file system on the way
-    let yaml = match parse::to_yaml(&text) {
-        Ok(p) => p.yaml,
-        Err(e) => return err(&format!("the process does not parse: {e}")),
+    // the process as the parser of the crate reads it, its references to the
+    // saved processes spliced in, then the tree
+    let parsed = match assemble(&text, bench) {
+        Ok(p) => p,
+        Err(e) => return err(&e),
     };
-    let tree = match Tree::parse(&yaml) {
+    let labels = parsed.labels.clone();
+    let tree = match Tree::parse(&parsed.yaml) {
         Ok(t) => t,
         Err(e) => return err(&format!("the instance does not read: {e}")),
     };
@@ -836,11 +908,11 @@ fn frontier(body: &str) -> String {
                 .decisions
                 .iter()
                 .map(|(history, action)| {
-                    let after: Vec<String> = history.iter().map(|&id| node_json(&tree, id)).collect();
+                    let after: Vec<String> = history.iter().map(|&id| node_json(&tree, id, &labels)).collect();
                     format!(
                         "{{\"after\": [{}], \"take\": {}, \"sentence\": {}}}",
                         after.join(", "),
-                        node_json(&tree, *action),
+                        node_json(&tree, *action, &labels),
                         esc(&decision(&tree, history, *action))
                     )
                 })
