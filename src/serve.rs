@@ -532,16 +532,30 @@ fn store_entries(bench: &Bench) -> Result<Vec<(String, String)>, String> {
 /// saved process spliced in place: the instance the engine sees, and beside
 /// it the identifier every node shows and the sub-processes. The store is
 /// read only when the text refers to it.
-fn assemble(text: &str, bench: &Bench) -> Result<parse::Parsed, String> {
+fn assemble(text: &str, bench: &Bench, editing: Option<&str>) -> Result<parse::Parsed, String> {
     let entries = if text.contains('@') { store_entries(bench)? } else { Vec::new() };
+    // the text being written stands for its own name, saved or not, so that
+    // what the page shows is what a save would make of it
     let mut resolve = |name: &str| -> Result<String, String> {
+        if Some(name) == editing {
+            return Ok(text.to_string());
+        }
         entries
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, t)| t.clone())
             .ok_or_else(|| format!("no process is saved as {name:?}"))
     };
-    parse::to_yaml_with(text, &mut resolve).map_err(|e| format!("the process does not parse: {e}"))
+    match editing {
+        Some(name) => parse::to_yaml_as(text, name, &mut resolve),
+        None => parse::to_yaml_with(text, &mut resolve),
+    }
+    .map_err(|e| format!("the process does not parse: {e}"))
+}
+
+/// The name the page is writing the process under, when it has one.
+fn editing_name(body: &str) -> Option<String> {
+    field(body, "name").map(|n| n.trim().to_string()).filter(|n| !n.is_empty())
 }
 
 /// The name of a node. A task carries its own; an internal node carries none
@@ -713,7 +727,8 @@ fn diagram(body: &str, bench: &Bench) -> String {
         Some(t) if !t.trim().is_empty() => t,
         _ => return err("no process was given"),
     };
-    let parsed = match assemble(&text, bench) {
+    let editing = editing_name(body);
+    let parsed = match assemble(&text, bench, editing.as_deref()) {
         Ok(p) => p,
         Err(e) => return err(&e),
     };
@@ -815,7 +830,8 @@ fn frontier(body: &str, bench: &Bench) -> String {
 
     // the process as the parser of the crate reads it, its references to the
     // saved processes spliced in, then the tree
-    let parsed = match assemble(&text, bench) {
+    let editing = editing_name(body);
+    let parsed = match assemble(&text, bench, editing.as_deref()) {
         Ok(p) => p,
         Err(e) => return err(&e),
     };

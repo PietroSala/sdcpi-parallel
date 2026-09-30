@@ -563,9 +563,16 @@ fn walk(
     }
 }
 
-fn parse_all(text: &str, resolver: Option<&mut dyn FnMut(&str) -> Result<String, String>>) -> Result<Parsed, String> {
+fn parse_all(
+    text: &str,
+    name: Option<&str>,
+    resolver: Option<&mut dyn FnMut(&str) -> Result<String, String>>,
+) -> Result<Parsed, String> {
     let mut sc = Scanner::new(text);
-    let mut ctx = Ctx { names: Vec::new(), resolver, chain: Vec::new() };
+    // the process being written, when it has a name, heads the chain: a
+    // reference to its own name is a cycle at once, saved or not
+    let chain = name.map(|n| vec![n.to_string()]).unwrap_or_default();
+    let mut ctx = Ctx { names: Vec::new(), resolver, chain };
     let ast = parse_process(&mut sc, &mut ctx, 0)?;
     sc.skip();
     if sc.at != sc.text.len() {
@@ -597,7 +604,7 @@ fn parse_all(text: &str, resolver: Option<&mut dyn FnMut(&str) -> Result<String,
 /// one-based, `impact_names` in the order of first appearance. A reference
 /// to a saved process is an error here: see `to_yaml_with`.
 pub fn to_yaml(text: &str) -> Result<Parsed, String> {
-    parse_all(text, None)
+    parse_all(text, None, None)
 }
 
 /// The same, with every reference `@saved` resolved through `resolver`, which
@@ -606,7 +613,17 @@ pub fn to_yaml_with(
     text: &str,
     resolver: &mut dyn FnMut(&str) -> Result<String, String>,
 ) -> Result<Parsed, String> {
-    parse_all(text, Some(resolver))
+    parse_all(text, None, Some(resolver))
+}
+
+/// The same for a process being written under `name`: a reference to that
+/// name is a cycle at once, whatever the store holds under it.
+pub fn to_yaml_as(
+    text: &str,
+    name: &str,
+    resolver: &mut dyn FnMut(&str) -> Result<String, String>,
+) -> Result<Parsed, String> {
+    parse_all(text, Some(name), Some(resolver))
 }
 
 #[cfg(test)]
@@ -657,6 +674,14 @@ mod tests {
         assert!(e.contains("neither a duration nor impacts"), "{e}");
         assert!(to_yaml_with("(@Repair), (Check, 1, {euro: 1})", &mut r).is_ok());
         assert!(to_yaml_with("@Repair, @Ship", &mut r).is_ok());
+    }
+
+    #[test]
+    fn a_process_referring_to_its_own_name_is_a_cycle_before_it_is_saved() {
+        let mut r = store;
+        let e = to_yaml_as("(A, 1, {x: 1}) , @Repair", "Repair", &mut r).unwrap_err();
+        assert!(e.contains("cycle") && e.contains("Repair > Repair"), "{e}");
+        assert!(to_yaml_as("(A, 1, {x: 1}) , @Repair", "Other", &mut r).is_ok());
     }
 
     #[test]

@@ -379,7 +379,10 @@ function endNameEdit(commit) {
   n.contentEditable = 'false';
   n.classList.remove('editing');
   n.parentNode.classList.remove('editing');
+  const before = DOC.name;
   setName(commit ? typed : DOC.name);
+  // the name is what a reference to the text itself is matched against
+  if (DOC.name !== before) refreshDiagram();
 }
 $('pname').addEventListener('keydown', (ev) => {
   if (!$('pname').isContentEditable) return;
@@ -412,6 +415,7 @@ async function saveProcess(overwrite) {
     $('savenote').textContent = `Saved as ${d.name}.`;
     refreshState();
     refreshSaved();
+    refreshDiagram();   // the store changed: a reference to this name reads the new text
   } catch (e) { $('savenote').textContent = String(e); }
 }
 $('save').addEventListener('click', () => {
@@ -481,6 +485,7 @@ async function deleteSaved(name) {
     else {
       $('savenote').textContent = `Deleted ${d.name}.`;
       if (DOC.loaded === d.name) { DOC.loaded = null; DOC.baseline = null; refreshState(); }
+      refreshDiagram();   // a reference to the deleted name now fails, and says so
     }
   } catch (e) { $('savenote').textContent = String(e); }
   refreshSaved();
@@ -518,6 +523,7 @@ function refreshDiagram() {
     }
     const chipInputs = [...$('chips').querySelectorAll('input')];
     const body = new URLSearchParams({ process: $('proc').value,
+                                       name: DOC.name || '',
                                        detail: $('detail').checked ? '1' : '0',
                                        tooltips: $('tips').checked ? '1' : '0',
                                        bars: $('bars').checked ? '1' : '0',
@@ -688,6 +694,7 @@ $('f').addEventListener('submit', async (e) => {
   $('out').innerHTML = '<p class="status">Searching…</p>';
   const body = new URLSearchParams({
     process: $('proc').value,
+    name: DOC.name || '',
     workers: $('workers').value,
     ablation: $('ablation').value,
     limit: $('limit').value,
