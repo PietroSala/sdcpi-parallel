@@ -312,6 +312,28 @@ fn save_process(body: &str, bench: &Bench) -> String {
     }
 }
 
+/// Removes a saved process; the page asks the user first.
+fn delete_saved(body: &str, bench: &Bench) -> String {
+    let name = match clean_name(field(body, "name")) {
+        Ok(n) => n,
+        Err(e) => return err(&e),
+    };
+    let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut entries = match read_store(&bench.saved) {
+        Ok(e) => e,
+        Err(e) => return err(&e),
+    };
+    let before = entries.len();
+    entries.retain(|(n, _)| *n != name);
+    if entries.len() == before {
+        return err(&format!("no process is saved as {name:?}"));
+    }
+    match write_store(&bench.saved, &entries) {
+        Ok(()) => format!("{{\"ok\": true, \"name\": {}}}", esc(&name)),
+        Err(e) => err(&e),
+    }
+}
+
 /// A saved process by its name.
 fn load_saved(body: &str, bench: &Bench) -> String {
     let name = match clean_name(field(body, "name")) {
@@ -349,6 +371,10 @@ fn serve_one(mut stream: TcpStream, bench: &Bench) {
         }
         ("POST", "/api/load") => {
             let out = load_saved(&body, bench);
+            send(&mut stream, 200, "application/json", &out)
+        }
+        ("POST", "/api/delete") => {
+            let out = delete_saved(&body, bench);
             send(&mut stream, 200, "application/json", &out)
         }
         ("POST", "/api/frontier") => {

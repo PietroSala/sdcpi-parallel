@@ -54,11 +54,18 @@
   button.ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); }
   #savenote button { width: auto; margin: 0 0 0 6px; padding: 2px 9px; font-size: 11.5px; }
   #savedbox ul { list-style: none; margin: 8px 0 0; padding: 0; }
-  #savedbox li { display: flex; justify-content: space-between; align-items: center;
+  #savedbox li { display: flex; align-items: center; gap: 8px; min-width: 0;
                  padding: 5px 6px; border-top: 1px solid var(--line); font-size: 12.5px; }
   #savedbox li:first-child { border-top: 0; }
-  #savedbox li a { color: var(--accent); cursor: pointer; font-weight: 600; text-decoration: none; }
-  #savedbox li span { color: var(--muted); font-size: 11px; }
+  #savedbox li a { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                   color: var(--accent); cursor: pointer; font-weight: 600; text-decoration: none; }
+  #savedbox li span { flex: none; color: var(--muted); font-size: 11px; white-space: nowrap; }
+  #savedbox li button.bin { flex: none; width: 24px; height: 22px; margin: 0; padding: 0; border-radius: 4px;
+                            background: #fff; border: 1px solid var(--line); color: var(--muted);
+                            display: inline-flex; align-items: center; justify-content: center; }
+  #savedbox li button.bin:hover { color: #b03a2e; border-color: #f3c9c2; background: #fdf0ee; }
+  #savedbox li.ask { color: var(--ink); }
+  #savedbox li.ask button { width: auto; margin: 0 0 0 6px; padding: 2px 9px; font-size: 11.5px; flex: none; }
   label.switch input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
   label.switch .track { position: relative; flex: none; width: 38px; height: 22px;
                         border-radius: 11px; background: #d1d0cb; transition: background .18s; }
@@ -378,10 +385,34 @@ async function refreshSaved() {
       $('savedbox').innerHTML = 'Nothing saved yet. Name the process above its text and press Save.';
       return;
     }
+    const bin = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1.5 3h9M4.5 3V1.8h3V3M2.5 3l.6 7.2h5.8L9.5 3M4.8 5v3.6M7.2 5v3.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>';
     $('savedbox').innerHTML = '<ul>' + list.map(e =>
-      `<li><a data-name="${h(e.name)}">${h(e.name)}</a><span>${e.chars} characters</span></li>`).join('') + '</ul>';
+      `<li><a data-name="${h(e.name)}" title="${h(e.name)}">${h(e.name)}</a><span>${e.chars} characters</span>`
+      + `<button type="button" class="bin" data-name="${h(e.name)}" title="delete ${h(e.name)}">${bin}</button></li>`).join('') + '</ul>';
     $('savedbox').querySelectorAll('a[data-name]').forEach(a => a.addEventListener('click', () => loadSaved(a.dataset.name)));
+    // the bin turns the row into a question, yes or no, on the row itself
+    $('savedbox').querySelectorAll('button.bin').forEach(b => b.addEventListener('click', () => {
+      const li = b.parentNode, name = b.dataset.name;
+      li.classList.add('ask');
+      li.innerHTML = `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;color:inherit;font-size:12.5px">Delete <b>${h(name)}</b>?</span>`
+        + `<button type="button" class="yes">yes</button><button type="button" class="ghost no">no</button>`;
+      li.querySelector('.yes').addEventListener('click', () => deleteSaved(name));
+      li.querySelector('.no').addEventListener('click', refreshSaved);
+    }));
   } catch (e) { /* the server is away */ }
+}
+async function deleteSaved(name) {
+  const body = new URLSearchParams({ name });
+  try {
+    const r = await fetch('/api/delete', { method: 'POST', body });
+    const d = await r.json();
+    if (d.error) { $('savenote').textContent = d.error; }
+    else {
+      $('savenote').textContent = `Deleted ${d.name}.`;
+      if (DOC.loaded === d.name) { DOC.loaded = null; DOC.baseline = null; refreshState(); }
+    }
+  } catch (e) { $('savenote').textContent = String(e); }
+  refreshSaved();
 }
 async function loadSaved(name) {
   const body = new URLSearchParams({ name });
