@@ -114,6 +114,30 @@
   .strategy code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted); }
   .strategy div { padding: 2px 0; }
   svg { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  /* the plot with, at its right, one two-ended slider per impact: the points
+     kept are the ones within every range, in the table and in the plot */
+  .plotrow { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+  .plotrow > svg { flex: none; }
+  .ranges { flex: 1 1 230px; min-width: 230px; max-width: 420px; background: var(--panel);
+            border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px 4px; font-size: 12.5px; }
+  .ranges .rhead { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .ranges button { width: auto; margin: 0; padding: 3px 9px; font-size: 12px; background: #fff;
+                   color: var(--ink); border: 1px solid var(--line); border-radius: 4px; }
+  .ranges .hint { margin: 2px 0 6px; }
+  .range { margin: 4px 0 10px; }
+  .range.flat { opacity: .55; }
+  .rname { display: flex; justify-content: space-between; gap: 8px; }
+  .rval { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .rng { position: relative; height: 20px; margin: 4px 9px 2px; touch-action: none; cursor: pointer; }
+  .rng::before { content: ""; position: absolute; left: 0; right: 0; top: 7px; height: 6px;
+                 background: #e6e5e0; border-radius: 3px; }
+  .rng .fill { position: absolute; top: 7px; height: 6px; background: #2a78d6; border-radius: 3px; }
+  .range.flat .rng { pointer-events: none; cursor: default; }
+  .range.flat .rng .thumb { cursor: default; }
+  .rng .thumb { position: absolute; top: 1px; width: 18px; height: 18px; border-radius: 50%; background: #fff;
+                border: 2px solid #2a78d6; transform: translateX(-50%); cursor: grab;
+                box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+  .rng .thumb:focus { outline: 2px solid #a9c7ec; outline-offset: 1px; }
   /* the diagram lives in a viewport that zooms and pans; the handle at its
      bottom right corner makes it taller */
   #diagram { position: relative; height: 380px; min-height: 160px; margin-bottom: 16px;
@@ -611,8 +635,10 @@ function render(d) {
     + (cut ? `<td>${p.certified === false ? 'provisional' : 'yes'}</td>` : '') + `</tr>`).join('');
   // two impacts are a staircase in the plane; three or more are parallel
   // coordinates, one axis per impact, a line per point, however many
+  PLOT2 = null;
+  SELECTED = null;
   const plot = k === 2 ? svg(d) : k >= 3 ? parallel(d) : '';
-  $('out').innerHTML = cards + plot
+  $('out').innerHTML = cards + `<div class="plotrow">${plot}<div class="ranges" id="ranges"></div></div>`
     + `<div class="strategy" id="str"><h3>Strategy</h3>
          <p class="status">Choose a point to see the strategy that attains it.</p></div>`
     + (cut ? `<label class="switch" style="margin-top:12px" for="onlyfinal"><input id="onlyfinal" type="checkbox"><span class="track"></span><span>Only the final points</span></label>` : '')
@@ -622,18 +648,168 @@ function render(d) {
     tr.addEventListener('click', () => select(+tr.dataset.i));
   });
   // after a cut, the provisional points can be hidden, in the table and in
-  // the plot alike
+  // the plot alike; the switch and the ranges are one filter
   const only = $('onlyfinal');
-  if (only) only.addEventListener('change', () => {
-    $('out').querySelectorAll('tbody tr.prov').forEach(tr => { tr.hidden = only.checked; });
-    $('out').querySelectorAll('svg [data-prov]').forEach(el => {
-      el.style.display = only.checked ? 'none' : '';
-    });
-  });
+  if (only) only.addEventListener('change', applyFilter);
   $('out').querySelectorAll('svg polyline[data-hit]').forEach(l => {
     l.addEventListener('click', () => select(+l.dataset.hit));
   });
+  buildRanges(d);
   if (d.points.length) select(0);
+}
+
+// Range filters: one two-ended slider per impact at the right of the plot,
+// in the order of the plot. A point is kept when every value of it lies
+// within the range of its impact, bounds included; the table, the plot and
+// the switch on the final points follow one filter. An end moves without
+// steps between the least and the greatest value the frontier takes, the
+// two extremes being those values exactly, so that nothing is lost there.
+let RANGES = [];   // per component j: the least and the greatest value, and the two ends
+let PLOT2 = null;  // the scales of the staircase, to redraw it through the points kept
+const fmt6 = (v) => String(+(+v).toFixed(6));
+// the place of a value on the track, linear between the least and the greatest
+const pos = (R, v) => R.b > R.a ? (v - R.a) / (R.b - R.a) : 0;
+
+function buildRanges(d) {
+  const names = d_names(d), order = d_order(d), box = $('ranges');
+  RANGES = names.map((_, j) => {
+    const vals = d.points.map(p => +p.approx[j]);
+    const a = vals.length ? Math.min(...vals) : 0, b = vals.length ? Math.max(...vals) : 0;
+    return { a, b, lo: a, hi: b, flat: !(b > a) };
+  });
+  if (!box) return;
+  const thumb = (j, end) => {
+    const R = RANGES[j];
+    return `<div class="thumb ${end}" data-end="${end}" tabindex="${R.flat ? -1 : 0}" role="slider"`
+      + ` aria-label="${h(names[j])}, ${end === 'lo' ? 'least' : 'greatest'}" aria-valuemin="${R.a}" aria-valuemax="${R.b}"></div>`;
+  };
+  box.innerHTML = `<div class="rhead"><span><b id="rcount">${d.points.length}</b> of ${d.points.length} points kept</span>`
+    + `<button type="button" id="rreset">Reset</button></div>`
+    + order.map(j => `<div class="range${RANGES[j].flat ? ' flat' : ''}">
+        <div class="rname"><span>${h(names[j])}</span><span class="rval" id="rval${j}"></span></div>
+        <div class="rng" data-j="${j}"><div class="fill"></div>${thumb(j, 'lo')}${thumb(j, 'hi')}</div>
+      </div>`).join('')
+    + `<div class="hint">Drag an end, or click the track, to keep the points within the ranges; the switch on
+       the final points adds to the filter.</div>`;
+  order.forEach(j => paintRange(j));
+  box.querySelectorAll('.rng').forEach(track => {
+    const j = +track.dataset.j;
+    let end = null, undecided = false;
+    const frac = (e) => { const r = track.getBoundingClientRect();
+                          return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)); };
+    const focusThumb = (which) => {
+      const t = track.querySelector('.thumb.' + which);
+      if (t) t.focus({ preventScroll: true });
+    };
+    track.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      const R = RANGES[j];
+      if (R.flat) return;
+      const f = frac(e), onThumb = e.target.dataset.end, together = R.lo === R.hi;
+      if (onThumb) {
+        // a press on a thumb takes it as it is, only a move carries it; with
+        // the two ends on one spot, the first move says which one goes
+        if (together) { end = null; undecided = true; } else end = onThumb;
+      } else if (together && Math.abs(f - pos(R, R.lo)) < 0.01) {
+        end = null; undecided = true;
+      } else {
+        // a press on the track carries the nearer end there, or, with the two
+        // ends on one spot, the one the press lies beyond
+        end = together ? (f < pos(R, R.lo) ? 'lo' : 'hi')
+            : (Math.abs(f - pos(R, R.lo)) <= Math.abs(f - pos(R, R.hi)) ? 'lo' : 'hi');
+        moveTo(j, end, f);
+      }
+      focusThumb(end || 'hi');
+      track.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    track.addEventListener('pointermove', (e) => {
+      if (undecided) {
+        const R = RANGES[j], f = frac(e);
+        if (Math.abs(f - pos(R, R.lo)) < 0.01) return;
+        end = f < pos(R, R.lo) ? 'lo' : 'hi'; undecided = false;
+        focusThumb(end);
+      }
+      if (end) moveTo(j, end, frac(e));
+    });
+    const done = () => { end = null; undecided = false; };
+    track.addEventListener('pointerup', done);
+    track.addEventListener('pointercancel', done);
+    track.querySelectorAll('.thumb').forEach(t => t.addEventListener('keydown', (e) => {
+      const step = e.key === 'ArrowLeft' ? -0.01 : e.key === 'ArrowRight' ? 0.01 : 0;
+      if (!step) return;
+      const R = RANGES[j];
+      if (R.flat) return;
+      moveTo(j, t.dataset.end, pos(R, t.dataset.end === 'lo' ? R.lo : R.hi) + step);
+      e.preventDefault();
+    }));
+  });
+  $('rreset').addEventListener('click', () => {
+    RANGES.forEach((R, j) => { R.lo = R.a; R.hi = R.b; paintRange(j); });
+    applyFilter();
+  });
+}
+
+// one end of a slider to the place f of the track, the extremes landing on
+// the least and the greatest value exactly, the two ends never crossing
+function moveTo(j, end, f) {
+  const R = RANGES[j];
+  f = Math.min(1, Math.max(0, f));
+  const v = f <= 0 ? R.a : f >= 1 ? R.b : R.a + f * (R.b - R.a);
+  if (end === 'lo') R.lo = Math.min(v, R.hi); else R.hi = Math.max(v, R.lo);
+  paintRange(j);
+  applyFilter();
+}
+
+function paintRange(j) {
+  const R = RANGES[j], el = $('out').querySelector(`.rng[data-j="${j}"]`);
+  if (!el) return;
+  const l = pos(R, R.lo) * 100, r = R.flat ? 100 : pos(R, R.hi) * 100;
+  el.querySelector('.fill').style.left = l + '%';
+  el.querySelector('.fill').style.width = (r - l) + '%';
+  el.querySelector('.thumb.lo').style.left = l + '%';
+  el.querySelector('.thumb.hi').style.left = r + '%';
+  $('rval' + j).textContent = R.flat ? fmt6(R.a) : `${fmt6(R.lo)} to ${fmt6(R.hi)}`;
+  el.querySelector('.thumb.lo').setAttribute('aria-valuenow', R.lo);
+  el.querySelector('.thumb.hi').setAttribute('aria-valuenow', R.hi);
+  el.querySelector('.thumb.lo').setAttribute('aria-valuetext', fmt6(R.lo));
+  el.querySelector('.thumb.hi').setAttribute('aria-valuetext', fmt6(R.hi));
+}
+
+// the one filter: the switch on the final points and every range at once
+function applyFilter() {
+  const d = LAST;
+  if (!d) return;
+  const only = $('onlyfinal'), finals = !!(only && only.checked);
+  const keep = d.points.map(p => (!finals || p.certified !== false)
+    && RANGES.every((R, j) => { const v = +p.approx[j]; return v >= R.lo && v <= R.hi; }));
+  $('out').querySelectorAll('tbody tr').forEach(tr => { tr.hidden = !keep[+tr.dataset.i]; });
+  $('out').querySelectorAll('svg [data-i], svg [data-hit]').forEach(el => {
+    const i = +(el.dataset.i !== undefined ? el.dataset.i : el.dataset.hit);
+    el.style.display = keep[i] ? '' : 'none';
+  });
+  if (PLOT2) {
+    // the staircase follows the points kept
+    const kept = PLOT2.P.map((p, i) => [p, i]).filter(([, i]) => keep[i]).sort((a, b) => a[0][0] - b[0][0]);
+    let path = '';
+    kept.forEach(([p], j) => {
+      path += j === 0 ? `M ${PLOT2.X(p[0])} ${PLOT2.Y(p[1])}`
+            : ` L ${PLOT2.X(p[0])} ${PLOT2.Y(kept[j - 1][0][1])} L ${PLOT2.X(p[0])} ${PLOT2.Y(p[1])}`;
+    });
+    const el = $('out').querySelector('svg path[data-stair]');
+    if (el) el.setAttribute('d', path);
+  }
+  const c = $('rcount');
+  if (c) c.textContent = keep.filter(Boolean).length;
+  // a chosen point that leaves the ranges gives way to the first one kept
+  if (SELECTED === null || !keep[SELECTED]) {
+    const first = keep.indexOf(true);
+    if (first >= 0) select(first, false);
+    else {
+      SELECTED = null;
+      $('str').innerHTML = '<h3>Strategy</h3><p class="status">No point is kept by the ranges and the switch.</p>';
+    }
+  }
 }
 
 const d_names = (d) => d.names || d.components.map(c => `impact ${c}`);
@@ -662,13 +838,26 @@ function sentence(st) {
     : `take ${label(st.take)}`;
 }
 
-function select(i) {
+// the row of a point into view inside the scrolling box of the table, the
+// page left where it is: scrollIntoView would move the whole page as well,
+// and did, under a slider being dragged
+function revealRow(tr) {
+  const box = tr.closest('.tablebox');
+  if (!box) return;
+  const head = box.querySelector('thead');
+  const hh = head ? head.getBoundingClientRect().height : 0;
+  const b = box.getBoundingClientRect(), r = tr.getBoundingClientRect();
+  if (r.top < b.top + hh) box.scrollTop -= (b.top + hh - r.top);
+  else if (r.bottom > b.bottom) box.scrollTop += r.bottom - b.bottom;
+}
+
+function select(i, reveal = true) {
   SELECTED = i;
   const p = LAST.points[i];
   $('out').querySelectorAll('tbody tr').forEach(tr => {
     const on = +tr.dataset.i === i;
     tr.classList.toggle('sel', on);
-    if (on) tr.scrollIntoView({ block: 'nearest' });
+    if (on && reveal) revealRow(tr);
   });
   document.querySelectorAll('svg circle[data-i]').forEach(c => {
     const on = +c.dataset.i === i, prov = LAST.points[+c.dataset.i].certified === false;
@@ -678,7 +867,7 @@ function select(i) {
   });
   document.querySelectorAll('svg polyline[data-i]').forEach(l => {
     const on = +l.dataset.i === i;
-    l.setAttribute('class', on ? 'pc sel' : 'pc');
+    l.classList.toggle('sel', on);
     if (on) l.parentNode.appendChild(l);   // in front of every other line
   });
   const lines = p.steps.length
@@ -714,20 +903,27 @@ function parallel(d) {
   const fmt = (v) => String(+(+v).toFixed(3));
   let axes = '';
   for (let j = 0; j < k; j++) {
-    axes += `<line x1="${X(j)}" y1="${M.t}" x2="${X(j)}" y2="${H - M.b}" stroke="#52514e"/>`
-      + `<text x="${X(j)}" y="${H - M.b + 16}" font-size="11" fill="#0b0b0b" text-anchor="middle">${h(names[j])}</text>`
+    // the time, when it is in, is the first axis and wears its own colour
+    const tm = d.time && j === 0;
+    axes += `<line x1="${X(j)}" y1="${M.t}" x2="${X(j)}" y2="${H - M.b}" stroke="${tm ? '#e07b00' : '#52514e'}"/>`
+      + `<text x="${X(j)}" y="${H - M.b + 16}" font-size="11" fill="${tm ? '#b45309' : '#0b0b0b'}" text-anchor="middle">${h(names[j])}</text>`
       + `<text x="${X(j)}" y="${M.t - 8}" font-size="10.5" fill="#6e6e6e" text-anchor="middle">${fmt(hi[j])}</text>`
       + `<text x="${X(j)}" y="${H - M.b + 29}" font-size="10.5" fill="#6e6e6e" text-anchor="middle">${fmt(lo[j])}</text>`;
   }
   const lines = d.points.map((p, i) => {
-    const pts = order.map((oj, j) => `${X(j)},${Y(j, p.approx[oj])}`).join(' ');
+    const P = order.map((oj, j) => `${X(j)},${Y(j, p.approx[oj])}`);
     const prov = p.certified === false ? ' data-prov="1"' : '';
     const dash = p.certified === false ? ' stroke-dasharray="5 4"' : '';
-    return `<polyline data-i="${i}"${prov} class="pc" points="${pts}"${dash}/>`
-         + `<polyline data-hit="${i}"${prov} points="${pts}" fill="none" stroke="transparent" stroke-width="10" style="cursor:pointer"/>`;
+    const seg = (pts, cls) => `<polyline data-i="${i}"${prov} class="${cls}" points="${pts.join(' ')}"${dash}/>`;
+    // with the time in, the segment from its axis to the next is drawn apart,
+    // in the colour of the time; the rest of the line keeps its colour
+    const line = d.time ? seg(P.slice(0, 2), 'pc tm') + seg(P.slice(1), 'pc') : seg(P, 'pc');
+    return line
+         + `<polyline data-hit="${i}"${prov} points="${P.join(' ')}" fill="none" stroke="transparent" stroke-width="10" style="cursor:pointer"/>`;
   }).join('');
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:100%;height:auto">
-    <style>.pc{fill:none;stroke:#a9c7ec;stroke-width:1.3;pointer-events:none}.pc.sel{stroke:#d0342c;stroke-width:2.6}</style>
+    <style>.pc{fill:none;stroke:#a9c7ec;stroke-width:1.3;pointer-events:none}.pc.sel{stroke:#d0342c;stroke-width:2.6}
+           .pc.tm{stroke:#f3c78a}.pc.sel.tm{stroke:#e07b00}</style>
     ${axes}${lines}
   </svg>`;
 }
@@ -751,6 +947,7 @@ function svg(d) {
     g += `<line x1="${M.l}" y1="${Y(v)}" x2="${W - M.r}" y2="${Y(v)}" stroke="#eeede9"/>`
        + `<text x="${M.l - 7}" y="${Y(v) + 4}" font-size="11" fill="#6e6e6e" text-anchor="end">${v}</text>`;
   const sorted = P.map((p, i) => [p, i]).sort((a, b) => a[0][0] - b[0][0]);
+  PLOT2 = { X, Y, P };
   let path = '';
   for (let j = 0; j < sorted.length; j++) {
     const [p] = sorted[j];
@@ -763,7 +960,7 @@ function svg(d) {
   }).join('');
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
     ${g}
-    <path d="${path}" fill="none" stroke="#2a78d6" stroke-width="1.2"
+    <path data-stair="1" d="${path}" fill="none" stroke="#2a78d6" stroke-width="1.2"
           stroke-dasharray="3 2" opacity="0.6"/>
     ${dots}
     <line x1="${M.l}" y1="${H - M.b}" x2="${W - M.r}" y2="${H - M.b}" stroke="#52514e"/>
