@@ -339,11 +339,16 @@ fn parse_process(
 fn parse_reference(sc: &mut Scanner, ctx: &mut Ctx<'_>, depth: usize) -> Result<Ast, String> {
     sc.eat(b'@')?;
     let name = sc.refname()?;
+    // the [shown] name, which may sit a space away; nothing else of the
+    // grammar opens on a bracket after a region
+    let mark = sc.at;
+    sc.skip();
     let shown = if sc.text.get(sc.at) == Some(&b'[') {
         sc.at += 1;
         let shown = sc.until_bracket()?;
         if shown.is_empty() { name.clone() } else { shown }
     } else {
+        sc.at = mark;
         name.clone()
     };
     // a reference carries neither a duration nor impacts, it takes them from
@@ -372,14 +377,16 @@ fn parse_reference(sc: &mut Scanner, ctx: &mut Ctx<'_>, depth: usize) -> Result<
         Some(resolve) => resolve(&name)?,
         None => {
             return Err(format!(
-                "the process refers to @{name}, and a reference is resolved against the saved processes of the page alone"
+                "the process refers to @{name}, and a reference is resolved against the saved processes of the page, or on the command line through --saved F"
             ))
         }
     };
     ctx.chain.push(name.clone());
     let mut inner = Scanner::new(&text);
-    let ast = parse_process(&mut inner, ctx, depth + 1)
-        .map_err(|e| format!("in the saved process {name}: {e}"))?;
+    // the saved process an error comes from is named once, the innermost
+    let ast = parse_process(&mut inner, ctx, depth + 1).map_err(|e| {
+        if e.starts_with("in the saved process ") { e } else { format!("in the saved process {name}: {e}") }
+    })?;
     inner.skip();
     if inner.at != inner.text.len() {
         return Err(format!("in the saved process {name}: trailing input at byte {}", inner.at));
@@ -555,8 +562,25 @@ fn walk(
                 shown: shown.clone(),
                 depth,
             });
+            // a saved text that is itself one reference is an alias: it has
+            // no node of its own, so the two would share a root and one box;
+            // the chain is one sub-process, named after every link, and the
+            // nodes below it carry the leaf of every link in their labels
+            let mut prefix = format!("{label}-");
+            let mut chain = name.clone();
+            let mut cur: &Ast = inner;
+            while let Ast::Sub { name: n2, inner: i2, .. } = cur {
+                chain = format!("{chain} = {n2}");
+                prefix = format!("{prefix}1-");
+                cur = i2;
+            }
+            subs[at].name = chain;
             let mut inner_own = 0u32;
-            let root = walk(inner, next, &mut inner_own, &format!("{label}-"), depth + 1, labels, subs);
+            let root = walk(cur, next, &mut inner_own, &prefix, depth + 1, labels, subs);
+            // the root of the spliced tree is, seen from the process that
+            // refers to it, the leaf: it shows that identifier, the one on
+            // the box, so that a decision naming it can be found there
+            labels[root as usize] = label;
             subs[at].root = root;
             root
         }
@@ -648,12 +672,13 @@ mod tests {
         assert_eq!(p.labels[1], "1");
         assert_eq!(p.labels[2], "2");
         assert_eq!(p.labels[3], "3-1");
-        assert_eq!(p.labels[4], "3-2");
+        assert_eq!(p.labels[4], "3", "the root of a spliced tree shows the leaf that refers to it");
         assert_eq!(p.labels[5], "3-3");
         assert_eq!(p.labels[6], "4");
         assert_eq!(p.labels[7], "5-1");
-        assert_eq!(p.labels[8], "5-2");
+        assert_eq!(p.labels[8], "5");
         assert_eq!(p.labels[9], "5-3-1");
+        assert_eq!(p.labels[10], "5-3");
         assert_eq!(p.labels[11], "5-3-3");
         let subs: Vec<(String, String, String, u32, usize)> = p
             .subs
@@ -665,6 +690,26 @@ mod tests {
         assert_eq!(subs[2], ("5-3".to_string(), "Repair".to_string(), "Again".to_string(), 10, 1));
         // the impacts merged by name, in the order of first appearance
         assert!(p.yaml.starts_with("impact_names: [euro, hours]\n"));
+    }
+
+    #[test]
+    fn an_alias_chain_is_one_sub_process_named_after_every_link() {
+        let mut r = |name: &str| -> Result<String, String> {
+            match name {
+                "Y" => Ok("(a, 1, {x: 1}) , (b, 1, {x: 2})".to_string()),
+                "X" => Ok("@Y [Seen]".to_string()),
+                "W" => Ok("(@X)".to_string()),
+                _ => Err(format!("no process is saved as {name:?}")),
+            }
+        };
+        let p = to_yaml_with("(c, 1, {x: 1}) , @W", &mut r).unwrap();
+        assert_eq!(p.subs.len(), 1);
+        assert_eq!(p.subs[0].label, "3");
+        assert_eq!(p.subs[0].name, "W = X = Y");
+        assert_eq!(p.subs[0].root, 4);
+        assert_eq!(p.labels[3], "3-1-1-1");
+        assert_eq!(p.labels[4], "3");
+        assert_eq!(p.labels[5], "3-1-1-3");
     }
 
     #[test]

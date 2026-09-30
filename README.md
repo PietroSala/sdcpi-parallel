@@ -94,7 +94,9 @@ task    ::= "(" name "," duration ")"
 A region may be `@saved`, a process saved on the page under that name,
 spliced in place: every process is a single-entry single-exit region, so a
 saved one stands wherever a task would. `@saved[shown]` draws it under
-another name. A saved process may refer to others, to any depth, and never
+another name, and `@"a saved name"` refers to a name with spaces in it. A
+reference carries neither a duration nor impacts, taking both from the
+saved process. A saved process may refer to others, to any depth, and never
 to itself through any chain, a cycle being an error; the impacts are merged
 by name, one table over the whole assembly. The engine sees the assembled
 process with its identifiers in-order over the whole; the page shows every

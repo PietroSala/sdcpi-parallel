@@ -325,6 +325,7 @@ $('load').addEventListener('click', async () => {
       DOC.loaded = null; DOC.baseline = null;
       setName(d.instance + (d.regenerated ? '-' + $('seed').value : ''));
       $('savenote').textContent = '';
+      EXPANDED.clear();
       invalidate();
       refreshDiagram();
     }
@@ -437,6 +438,7 @@ function newProcess() {
 function startNew() {
   endNameEdit(false);
   $('proc').value = '';
+  EXPANDED.clear();
   DOC.loaded = null; DOC.baseline = null;
   setName(null);
   $('savenote').textContent = '';
@@ -448,6 +450,7 @@ $('rollback').addEventListener('click', () => {
   if (DOC.baseline === null) return;
   $('proc').value = DOC.baseline;
   $('savenote').textContent = `Back to the text saved as ${DOC.loaded}.`;
+  EXPANDED.clear();
   invalidate(); refreshDiagram(); refreshState();
 });
 
@@ -500,6 +503,7 @@ async function loadSaved(name) {
     DOC.loaded = d.name; DOC.baseline = d.process;
     setName(d.name);
     $('savenote').textContent = `Loaded ${d.name}.`;
+    EXPANDED.clear();
     invalidate(); refreshDiagram();
   } catch (e) { $('savenote').textContent = String(e); }
 }
@@ -540,11 +544,15 @@ function refreshDiagram() {
       if (d.svg) {
         chips(d.impacts || []);
         subsPanel(d.subs || []);
+        // a view zoomed or panned survives the redraw, so that a sub-process
+        // opened from its plus opens where it was looked at
+        const keep = VIEW && VIEW.zoomed() ? VIEW.state() : null;
         $('diagram').innerHTML = d.svg
           + '<div class="zoom"><button type="button" title="zoom in">+</button>'
           + '<button type="button" title="zoom out">−</button>'
           + '<button type="button" class="fit" title="fit the whole drawing">fit</button></div>';
-        const view = viewport($('diagram').querySelector('svg'), toggleSub);
+        const view = viewport($('diagram').querySelector('svg'), toggleSub, keep);
+        VIEW = view;
         const [zin, zout, fit] = $('diagram').querySelectorAll('.zoom button');
         zin.addEventListener('click', view.zoomIn);
         zout.addEventListener('click', view.zoomOut);
@@ -554,6 +562,7 @@ function refreshDiagram() {
       } else {
         $('diagram').classList.add('stale');
         $('dnote').textContent = d.error || '';
+        $('subpanel').hidden = true;   // its rows belong to the drawing that failed
       }
     } catch (e) { /* the server is away; the drawing stays */ }
   }, 250);
@@ -564,12 +573,16 @@ function refreshDiagram() {
 // sub-process above it is expanded, as a folder shows its content.
 let EXPANDED = new Set();
 let SUBS = [];
+let VIEW = null;   // the viewport of the drawing, to keep a zoom across a redraw
 function toggleSub(label) {
   if (EXPANDED.has(label)) EXPANDED.delete(label); else EXPANDED.add(label);
   refreshDiagram();
 }
 function subsPanel(subs) {
   SUBS = subs;
+  // an expansion whose sub-process is gone is dropped, the labels being
+  // positional and a text edited having moved or removed the reference
+  EXPANDED = new Set([...EXPANDED].filter(l => subs.some(s => s.label === l)));
   const panel = $('subpanel');
   if (!subs.length) { panel.hidden = true; return; }
   panel.hidden = false;
@@ -601,9 +614,9 @@ $('proc').addEventListener('input', () => { invalidate(); refreshDiagram(); refr
 // Zoom and pan on a drawing: the wheel zooms about the pointer, a drag pans,
 // the buttons zoom about the centre and fit the whole drawing again. The
 // drawing is scaled by its viewBox, so nothing is redrawn.
-function viewport(svg, onToggle) {
+function viewport(svg, onToggle, keep) {
   const home = svg.getAttribute('viewBox').split(/\s+/).map(Number);
-  let vb = home.slice();
+  let vb = keep ? keep.slice() : home.slice();
   svg.removeAttribute('width'); svg.removeAttribute('height');
   svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
   const apply = () => svg.setAttribute('viewBox', vb.map(v => v.toFixed(2)).join(' '));
@@ -656,10 +669,13 @@ function viewport(svg, onToggle) {
   svg.addEventListener('pointerup', release);
   svg.addEventListener('pointercancel', release);
   const centre = () => [vb[0] + vb[2] / 2, vb[1] + vb[3] / 2];
+  if (keep) apply();
   return {
     zoomIn: () => zoom(1.25, ...centre()),
     zoomOut: () => zoom(0.8, ...centre()),
     fit: () => { vb = home.slice(); apply(); },
+    state: () => vb.slice(),
+    zoomed: () => vb.some((v, i) => Math.abs(v - home[i]) > 1e-6),
   };
 }
 $('detail').addEventListener('change', () => {

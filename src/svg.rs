@@ -78,6 +78,9 @@ pub struct SubBox {
 }
 /// The square with the plus or the minus on the border of a sub-process.
 const TOGGLE: f64 = 14.0;
+/// The margin of the bold box of an expanded sub-process: room for its
+/// corner line and for the minus in its corner.
+const SUB_M: f64 = 18.0;
 const CLOCK_R: f64 = 7.0;
 /// The column the clock takes at the right of a box, and its height with
 /// the number under it.
@@ -246,11 +249,29 @@ pub fn impact_names(tree: &Tree) -> Vec<String> {
 fn inset(tree: &Tree, id: u32, s: &Sizes) -> f64 {
     if s.collapsed(id) {
         0.0
-    } else if s.expanded(id) || (s.detailed() && tree.node(id).kind != Kind::Task) {
+    } else if s.expanded(id) {
+        SUB_M
+    } else if s.detailed() && tree.node(id).kind != Kind::Task {
         REGION_M
     } else {
         0.0
     }
+}
+
+/// The corner line of an expanded box, cut down to what fits beside the
+/// minus: the identifier and the names, the identifier and the name shown,
+/// or the identifier alone.
+fn corner_line(b: &SubBox, w: f64) -> String {
+    let room = w - 14.0 - TOGGLE - 12.0;
+    let full = format!("{} · {} @{}", b.label, b.shown, b.name);
+    if text_w(&full, 10.5) <= room {
+        return full;
+    }
+    let short = format!("{} · {}", b.label, b.shown);
+    if text_w(&short, 10.5) <= room {
+        return short;
+    }
+    b.label.clone()
 }
 
 /// The three lines of a task box: the name, the duration, the impacts that
@@ -455,12 +476,15 @@ fn draw_collapsed(id: u32, x: f64, y: f64, s: &Sizes, out: &mut String) {
 /// the corner, the minus on its border; its tree is drawn inside.
 fn sub_box(out: &mut String, id: u32, b: &SubBox, x: f64, y: f64, w: f64, h: f64) {
     out.push_str(&format!(
-        "<g class=\"sub expanded\" data-id=\"{id}\" data-sub=\"{}\">\n\
+        "<g class=\"sub expanded\" data-id=\"{id}\" data-sub=\"{}\">\n<title>{} · {} @{}</title>\n\
          <rect class=\"box\" x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"10\" ry=\"10\"/>\n\
-         <text class=\"rid\" x=\"{:.1}\" y=\"{:.1}\">{} · {} @{}</text>\n",
-        xml(&b.label), x + 7.0, y + 11.0, xml(&b.label), xml(&b.shown), xml(&b.name)
+         <text class=\"rid\" x=\"{:.1}\" y=\"{:.1}\">{}</text>\n",
+        xml(&b.label), xml(&b.label), xml(&b.shown), xml(&b.name),
+        x + 7.0, y + 12.0, xml(&corner_line(b, w))
     ));
-    toggle(out, &b.label, x + w / 2.0, y + h, true);
+    // the minus in the top right corner, inside the margin, where no toggle
+    // of a sub-process drawn inside can meet it
+    toggle(out, &b.label, x + w - SUB_M / 2.0, y + SUB_M / 2.0, true);
     out.push_str("</g>\n");
 }
 
@@ -680,7 +704,7 @@ pub fn render(tree: &Tree, style: &Style) -> String {
          .prob{{font-size:11px;fill:#6e6e6e}}\
          .region rect{{fill:none;stroke:#9c9a95;stroke-width:1;stroke-dasharray:5 4}}\
          .region .rid{{font-size:10.5px;fill:#6e6e6e;font-family:ui-monospace,Menlo,monospace}}\
-         .task .id{{font-family:ui-monospace,Menlo,monospace}}\
+         .task .id,.sub .id{{font-family:ui-monospace,Menlo,monospace}}\
          .task .base{{stroke:#c9c8c3;stroke-width:1}}\
          .task .bar{{stroke:none}}\
          .task .small{{font-size:9.5px;fill:#6e6e6e}}\

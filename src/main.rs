@@ -480,6 +480,7 @@ fn cmd_parse(args: &[String]) -> i32 {
     // a reference @saved is resolved against a store of the page, --saved F
     let parsed = match args.flag("saved") {
         None => parse::to_yaml(&text),
+        Some(f) if !std::path::Path::new(f).is_file() => return fail(&format!("{f}: no such file")),
         Some(f) => match serve::read_store(std::path::Path::new(f)) {
             Err(e) => return fail(&e),
             Ok(entries) => {

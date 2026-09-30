@@ -140,7 +140,16 @@ pub fn cmd_serve(args: &[String]) -> i32 {
         match stream {
             Ok(s) => {
                 let bench = bench.clone();
-                std::thread::spawn(move || serve_one(s, &bench));
+                // a deep term recurses through the parser, the tree and the
+                // drawing; the bound of the parser sits at two thousand
+                // levels, which needs more than the two megabytes a thread
+                // gets by default
+                let spawned = std::thread::Builder::new()
+                    .stack_size(64 << 20)
+                    .spawn(move || serve_one(s, &bench));
+                if let Err(e) = spawned {
+                    eprintln!("a connection could not be served: {e}");
+                }
             }
             Err(e) => eprintln!("connection refused itself: {e}"),
         }
@@ -258,7 +267,52 @@ fn clean_name(raw: Option<String>) -> Result<String, String> {
     if name.chars().count() > 80 {
         return Err("a name is at most eighty characters".to_string());
     }
+    if name.contains('"') {
+        return Err("a name carries no double quote, which is how a name with spaces is referred to".to_string());
+    }
     Ok(name)
+}
+
+/// Whether saving `text` under `name` would close a cycle of references,
+/// through the store as it stands: the message of the cycle, if it would.
+fn closes_a_cycle(text: &str, name: &str, entries: &[(String, String)]) -> Option<String> {
+    if !text.contains('@') && !entries.iter().any(|(_, t)| t.contains('@')) {
+        return None;
+    }
+    let mut resolve = |n: &str| -> Result<String, String> {
+        if n == name {
+            return Ok(text.to_string());
+        }
+        entries
+            .iter()
+            .find(|(m, _)| m == n)
+            .map(|(_, t)| t.clone())
+            .ok_or_else(|| format!("no process is saved as {n:?}"))
+    };
+    match parse::to_yaml_as(text, name, &mut resolve) {
+        Err(e) if e.contains("form a cycle") => Some(e),
+        _ => None,
+    }
+}
+
+/// The saved processes whose text refers to `name`.
+fn referrers<'a>(name: &str, entries: &'a [(String, String)]) -> Vec<&'a str> {
+    let bare = format!("@{name}");
+    let quoted = format!("@\"{name}\"");
+    entries
+        .iter()
+        .filter(|(n, t)| {
+            n != name
+                && (t.contains(&quoted)
+                    || t.match_indices(&bare).any(|(i, _)| {
+                        !t[i + bare.len()..]
+                            .chars()
+                            .next()
+                            .map_or(false, |c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+                    }))
+        })
+        .map(|(n, _)| n.as_str())
+        .collect()
 }
 
 /// The saved processes, by name, with the size of each.
@@ -297,6 +351,11 @@ fn save_process(body: &str, bench: &Bench) -> String {
         Ok(e) => e,
         Err(e) => return err(&e),
     };
+    // a text that would refer to itself through the store is not saved: the
+    // save would leave every process on the cycle undrawable
+    if let Some(cycle) = closes_a_cycle(&text, &name, &entries) {
+        return err(&format!("not saved: {cycle}"));
+    }
     match entries.iter_mut().find(|(n, _)| *n == name) {
         Some(entry) => {
             if !overwrite {
@@ -324,6 +383,15 @@ fn delete_saved(body: &str, bench: &Bench) -> String {
         Err(e) => return err(&e),
     };
     let before = entries.len();
+    // a process others refer to stays: deleting it would break them
+    let used_by = referrers(&name, &entries);
+    if !used_by.is_empty() {
+        return err(&format!(
+            "not deleted: {} is referred to by {}",
+            name,
+            used_by.join(", ")
+        ));
+    }
     entries.retain(|(n, _)| *n != name);
     if entries.len() == before {
         return err(&format!("no process is saved as {name:?}"));
@@ -617,8 +685,9 @@ fn hello(bench: &Bench) -> String {
              impacts that are not zero; , is a sequence, || a parallel, ^ a choice of \
              the controller and ^[p] one of nature taking its left operand with \
              probability p; brackets group. @saved refers to a process saved on this \
-             page, spliced in place as a region, and @saved[shown] shows it under \
-             another name; a saved process may refer to others, never to itself."
+             page, spliced in place as a region, @\"a saved name\" one with spaces, and \
+             @saved[shown] shows it under another name; a saved process may refer to \
+             others, never to itself."
         ),
         esc(EXAMPLE),
         bench.available(),
