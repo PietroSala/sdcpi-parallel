@@ -37,9 +37,10 @@
   .pname:hover { border-color: var(--line); background: #fff; }
   .pname.untitled { color: var(--muted); font-style: italic; font-weight: 500; }
   #pname-edit { width: auto; flex: 1; padding: 3px 6px; font-weight: 600; }
-  .badge { font-size: 12px; color: var(--muted); }
-  .badge::before { content: "· "; }
-  .badge.modified { color: var(--warm); }
+  .badge { font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase;
+           padding: 2px 7px; border-radius: 10px; background: #eaf2fd; color: var(--accent); }
+  .badge.modified { background: #fdf1e4; color: var(--warm); }
+  .badge.new { background: #efefec; color: var(--muted); }
   .namerow button.small { width: auto; padding: 5px 11px; }
   button.ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); }
   #savenote button { width: auto; margin: 0 0 0 6px; padding: 2px 9px; font-size: 11.5px; }
@@ -153,7 +154,7 @@
   <label for="proc">Process</label>
   <div class="namerow">
     <span id="pname" class="pname untitled" title="click to name the process">untitled</span>
-    <input id="pname-edit" type="text" maxlength="80" placeholder="a name" hidden>
+    <input id="pname-edit" type="text" maxlength="80" placeholder="title of the process" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" hidden>
     <span id="pstate" class="badge" hidden></span>
     <span class="grow"></span>
     <button type="button" id="rollback" class="small ghost" hidden title="back to the text saved under this name">Rollback</button>
