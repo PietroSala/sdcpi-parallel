@@ -36,7 +36,8 @@
   .pname { font-weight: 600; cursor: text; padding: 3px 6px; border-radius: 4px; border: 1px dashed transparent; }
   .pname:hover { border-color: var(--line); background: #fff; }
   .pname.untitled { color: var(--muted); font-style: italic; font-weight: 500; }
-  #pname-edit { width: auto; flex: 1; padding: 3px 6px; font-weight: 600; }
+  .pname.editing { border-color: var(--accent); background: #fff; font-style: normal; color: var(--ink);
+                   min-width: 120px; outline: none; }
   .badge { font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase;
            padding: 2px 7px; border-radius: 10px; background: #eaf2fd; color: var(--accent); }
   .badge.modified { background: #fdf1e4; color: var(--warm); }
@@ -153,8 +154,7 @@
 
   <label for="proc">Process</label>
   <div class="namerow">
-    <span id="pname" class="pname untitled" title="click to name the process">untitled</span>
-    <input id="pname-edit" type="text" maxlength="80" placeholder="title of the process" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" hidden>
+    <span id="pname" class="pname untitled" title="click to name the process" spellcheck="false">untitled</span>
     <span id="pstate" class="badge" hidden></span>
     <span class="grow"></span>
     <button type="button" id="rollback" class="small ghost" hidden title="back to the text saved under this name">Rollback</button>
@@ -292,25 +292,35 @@ function refreshState() {
   badge.className = 'badge ' + state;
   $('rollback').hidden = state !== 'modified';
 }
+// The name is edited in place: the same span becomes editable on a click,
+// Enter or a click elsewhere keeps what was typed, Escape drops it. No text
+// field is involved, so the browser offers no AutoFill of contacts on it.
 $('pname').addEventListener('click', () => {
-  $('pname').hidden = true;
-  const e = $('pname-edit');
-  e.value = DOC.name || '';
-  e.hidden = false;
-  e.focus(); e.select();
+  const n = $('pname');
+  if (n.isContentEditable) return;
+  n.textContent = DOC.name || '';
+  n.classList.add('editing');
+  n.classList.remove('untitled');
+  n.contentEditable = 'plaintext-only';
+  if (!n.isContentEditable) n.contentEditable = 'true';
+  n.focus();
+  const range = document.createRange(); range.selectNodeContents(n);
+  const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
 });
 function endNameEdit(commit) {
-  const e = $('pname-edit');
-  if (e.hidden) return;
-  e.hidden = true;
-  $('pname').hidden = false;
-  if (commit) setName(e.value);
+  const n = $('pname');
+  if (!n.isContentEditable) return;
+  const typed = n.textContent.replace(/\s+/g, ' ').trim().slice(0, 80);
+  n.contentEditable = 'false';
+  n.classList.remove('editing');
+  setName(commit ? typed : DOC.name);
 }
-$('pname-edit').addEventListener('keydown', (ev) => {
+$('pname').addEventListener('keydown', (ev) => {
+  if (!$('pname').isContentEditable) return;
   if (ev.key === 'Enter') { ev.preventDefault(); endNameEdit(true); }
   if (ev.key === 'Escape') { ev.preventDefault(); endNameEdit(false); }
 });
-$('pname-edit').addEventListener('blur', () => endNameEdit(true));
+$('pname').addEventListener('blur', () => endNameEdit(true));
 
 async function saveProcess(overwrite) {
   if (!DOC.name) {
