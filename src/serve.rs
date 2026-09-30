@@ -69,10 +69,13 @@ const EXAMPLE: &str = "\
 pub struct Bench {
     instances: PathBuf,
     generator: Option<PathBuf>,
+    /// The file the saved processes live in: one JSON object, name to text,
+    /// rewritten whole at every save, which is what a few kilobytes deserve.
+    saved: PathBuf,
 }
 
 impl Bench {
-    fn locate(flag: Option<&str>) -> Bench {
+    fn locate(flag: Option<&str>, saved: Option<&str>) -> Bench {
         let root = std::env::current_exe()
             .ok()
             .and_then(|e| e.ancestors().nth(3).map(|p| p.to_path_buf()));
@@ -95,7 +98,11 @@ impl Bench {
                     .map(|s| s.join("storm-comparison-ablation/make_bpmn_cpi.py"))
                     .filter(|p| p.is_file())
             });
-        Bench { instances, generator }
+        let saved = saved
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("SDCPI_SAVED").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("sdcpi-processes.json"));
+        Bench { instances, generator, saved }
     }
     fn available(&self) -> bool {
         self.instances.is_dir() || self.generator.is_some()
@@ -107,7 +114,7 @@ pub fn cmd_serve(args: &[String]) -> i32 {
         Ok(a) => a,
         Err(e) => return crate::fail(&e),
     };
-    let bench = Bench::locate(args.flag("bench"));
+    let bench = Bench::locate(args.flag("bench"), args.flag("saved"));
     let port: u16 = match args.flag("port") {
         None => 8080,
         Some(p) => match p.parse() {
@@ -127,6 +134,7 @@ pub fn cmd_serve(args: &[String]) -> i32 {
     } else {
         println!("benchmark instances: none found, the loading panel is hidden");
     }
+    println!("saved processes: {}", bench.saved.display());
     let bench = Arc::new(bench);
     for stream in listener.incoming() {
         match stream {
@@ -144,6 +152,182 @@ pub fn cmd_serve(args: &[String]) -> i32 {
 /// and both would report a time neither would have taken alone.
 static SEARCH: Mutex<()> = Mutex::new(());
 
+/// One save at a time: the file is read, changed and rewritten whole.
+static SAVING: Mutex<()> = Mutex::new(());
+
+// -- the saved processes ------------------------------------------------------
+
+/// The store read back: a flat JSON object of strings, name to text, which
+/// is all the store holds, read by a parser of its own since the crate
+/// carries none. Anything else in the file is an error.
+fn read_store(path: &std::path::Path) -> Result<Vec<(String, String)>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0usize;
+    let skip = |i: &mut usize| {
+        while *i < chars.len() && chars[*i].is_whitespace() {
+            *i += 1;
+        }
+    };
+    let string = |i: &mut usize| -> Result<String, String> {
+        if chars.get(*i) != Some(&'"') {
+            return Err(format!("a string was expected at character {}", *i));
+        }
+        *i += 1;
+        let mut out = String::new();
+        loop {
+            let c = *chars.get(*i).ok_or("the file ends inside a string")?;
+            *i += 1;
+            match c {
+                '"' => return Ok(out),
+                '\\' => {
+                    let e = *chars.get(*i).ok_or("the file ends inside an escape")?;
+                    *i += 1;
+                    match e {
+                        '"' => out.push('"'),
+                        '\\' => out.push('\\'),
+                        '/' => out.push('/'),
+                        'n' => out.push('\n'),
+                        'r' => out.push('\r'),
+                        't' => out.push('\t'),
+                        'b' => out.push('\u{8}'),
+                        'f' => out.push('\u{c}'),
+                        'u' => {
+                            let hex: String = chars.get(*i..*i + 4).ok_or("a short \\u escape")?.iter().collect();
+                            *i += 4;
+                            let code = u32::from_str_radix(&hex, 16).map_err(|_| "a bad \\u escape")?;
+                            out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
+                        }
+                        other => return Err(format!("an unknown escape \\{other}")),
+                    }
+                }
+                c => out.push(c),
+            }
+        }
+    };
+    skip(&mut i);
+    if chars.get(i) != Some(&'{') {
+        return Err("the store does not open with a brace".to_string());
+    }
+    i += 1;
+    let mut out = Vec::new();
+    loop {
+        skip(&mut i);
+        match chars.get(i) {
+            Some('}') => return Ok(out),
+            Some(',') if !out.is_empty() => {
+                i += 1;
+                skip(&mut i);
+            }
+            _ if out.is_empty() => {}
+            _ => return Err(format!("a comma or a brace was expected at character {i}")),
+        }
+        let name = string(&mut i)?;
+        skip(&mut i);
+        if chars.get(i) != Some(&':') {
+            return Err(format!("a colon was expected at character {i}"));
+        }
+        i += 1;
+        skip(&mut i);
+        let text = string(&mut i)?;
+        out.push((name, text));
+    }
+}
+
+fn write_store(path: &std::path::Path, entries: &[(String, String)]) -> Result<(), String> {
+    let body: Vec<String> = entries
+        .iter()
+        .map(|(n, t)| format!("  {}: {}", esc(n), esc(t)))
+        .collect();
+    let text = format!("{{\n{}\n}}\n", body.join(",\n"));
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// A name as the user typed it, trimmed, bounded, and not empty.
+fn clean_name(raw: Option<String>) -> Result<String, String> {
+    let name = raw.unwrap_or_default().trim().to_string();
+    if name.is_empty() {
+        return Err("the process needs a name".to_string());
+    }
+    if name.chars().count() > 80 {
+        return Err("a name is at most eighty characters".to_string());
+    }
+    Ok(name)
+}
+
+/// The saved processes, by name, with the size of each.
+fn saved_list(bench: &Bench) -> String {
+    let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+    match read_store(&bench.saved) {
+        Err(e) => err(&e),
+        Ok(mut entries) => {
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            let items: Vec<String> = entries
+                .iter()
+                .map(|(n, t)| format!("{{\"name\": {}, \"chars\": {}}}", esc(n), t.chars().count()))
+                .collect();
+            format!("{{\"saved\": [{}]}}", items.join(", "))
+        }
+    }
+}
+
+/// Saves the text under the name; an existing name is not overwritten unless
+/// the form says so, the page asking the user first.
+fn save_process(body: &str, bench: &Bench) -> String {
+    let name = match clean_name(field(body, "name")) {
+        Ok(n) => n,
+        Err(e) => return err(&e),
+    };
+    let text = match field(body, "process") {
+        Some(t) if !t.trim().is_empty() => t,
+        _ => return err("there is no process to save"),
+    };
+    if text.len() > MAX_BODY {
+        return err("the process is too long to save");
+    }
+    let overwrite = matches!(field(body, "overwrite").as_deref(), Some("1") | Some("true"));
+    let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut entries = match read_store(&bench.saved) {
+        Ok(e) => e,
+        Err(e) => return err(&e),
+    };
+    match entries.iter_mut().find(|(n, _)| *n == name) {
+        Some(entry) => {
+            if !overwrite {
+                return format!("{{\"exists\": true, \"name\": {}}}", esc(&name));
+            }
+            entry.1 = text;
+        }
+        None => entries.push((name.clone(), text)),
+    }
+    match write_store(&bench.saved, &entries) {
+        Ok(()) => format!("{{\"ok\": true, \"name\": {}}}", esc(&name)),
+        Err(e) => err(&e),
+    }
+}
+
+/// A saved process by its name.
+fn load_saved(body: &str, bench: &Bench) -> String {
+    let name = match clean_name(field(body, "name")) {
+        Ok(n) => n,
+        Err(e) => return err(&e),
+    };
+    let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+    match read_store(&bench.saved) {
+        Err(e) => err(&e),
+        Ok(entries) => match entries.into_iter().find(|(n, _)| *n == name) {
+            Some((n, t)) => format!("{{\"name\": {}, \"process\": {}}}", esc(&n), esc(&t)),
+            None => err(&format!("no process is saved as {name:?}")),
+        },
+    }
+}
+
 fn serve_one(mut stream: TcpStream, bench: &Bench) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(60)));
@@ -156,6 +340,15 @@ fn serve_one(mut stream: TcpStream, bench: &Bench) {
         ("GET", "/api/hello") => send(&mut stream, 200, "application/json", &hello(bench)),
         ("POST", "/api/bench") => {
             let out = load_bench(&body, bench);
+            send(&mut stream, 200, "application/json", &out)
+        }
+        ("GET", "/api/saved") => send(&mut stream, 200, "application/json", &saved_list(bench)),
+        ("POST", "/api/save") => {
+            let out = save_process(&body, bench);
+            send(&mut stream, 200, "application/json", &out)
+        }
+        ("POST", "/api/load") => {
+            let out = load_saved(&body, bench);
             send(&mut stream, 200, "application/json", &out)
         }
         ("POST", "/api/frontier") => {

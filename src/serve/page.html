@@ -31,6 +31,25 @@
                  font-weight: 500; cursor: pointer; background: #fff; }
   .chips label.off { color: var(--muted); }
   .chips input { width: auto; margin: 0; }
+  .namerow { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .namerow .grow { flex: 1; }
+  .pname { font-weight: 600; cursor: text; padding: 3px 6px; border-radius: 4px; border: 1px dashed transparent; }
+  .pname:hover { border-color: var(--line); background: #fff; }
+  .pname.untitled { color: var(--muted); font-style: italic; font-weight: 500; }
+  #pname-edit { width: auto; flex: 1; padding: 3px 6px; font-weight: 600; }
+  .badge { font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase;
+           padding: 2px 7px; border-radius: 10px; background: #eaf2fd; color: var(--accent); }
+  .badge.modified { background: #fdf1e4; color: var(--warm); }
+  .badge.new { background: #efefec; color: var(--muted); }
+  .namerow button.small { width: auto; padding: 5px 11px; }
+  button.ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+  #savenote button { width: auto; margin: 0 0 0 6px; padding: 2px 9px; font-size: 11.5px; }
+  #savedbox ul { list-style: none; margin: 8px 0 0; padding: 0; }
+  #savedbox li { display: flex; justify-content: space-between; align-items: center;
+                 padding: 5px 6px; border-top: 1px solid var(--line); font-size: 12.5px; }
+  #savedbox li:first-child { border-top: 0; }
+  #savedbox li a { color: var(--accent); cursor: pointer; font-weight: 600; text-decoration: none; }
+  #savedbox li span { color: var(--muted); font-size: 11px; }
   label.switch input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
   label.switch .track { position: relative; flex: none; width: 38px; height: 22px;
                         border-radius: 11px; background: #d1d0cb; transition: background .18s; }
@@ -127,7 +146,21 @@
       independence, with the impacts of the campaign; drawn again by the mode chosen when the switch is on.</div>
   </details>
 
+  <details id="savedpanel">
+    <summary>Saved processes</summary>
+    <div id="savedbox" class="hint">Nothing saved yet. Name the process above its text and press Save.</div>
+  </details>
+
   <label for="proc">Process</label>
+  <div class="namerow">
+    <span id="pname" class="pname untitled" title="click to name the process">untitled</span>
+    <input id="pname-edit" type="text" maxlength="80" placeholder="a name" hidden>
+    <span id="pstate" class="badge" hidden></span>
+    <span class="grow"></span>
+    <button type="button" id="rollback" class="small ghost" hidden title="back to the text saved under this name">Rollback</button>
+    <button type="button" id="save" class="small">Save</button>
+  </div>
+  <div id="savenote" class="hint"></div>
   <textarea id="proc" spellcheck="false"></textarea>
   <div class="hint" id="grammar"></div>
 
@@ -199,6 +232,7 @@ fill('b-n', 1, 10, 2); fill('b-i', 1, 10, 3); fill('b-k', 1, 10, 2); fill('b-d',
 fetch('/api/hello').then(r => r.json()).then(h => {
   $('grammar').textContent = h.grammar || '';
   if (h.example) $('proc').value = h.example;
+  refreshState();
   if (h.bench) {
     (h.modes || []).forEach(m => {
       const o = document.createElement('option'); o.value = m; o.textContent = m; $('b-m').appendChild(o);
@@ -224,12 +258,125 @@ $('load').addEventListener('click', async () => {
     else {
       $('proc').value = d.process;
       $('benchnote').textContent = `Loaded ${d.instance}` + (d.regenerated ? ', the impacts drawn again' : '');
+      DOC.loaded = null; DOC.baseline = null;
+      setName(d.instance + (d.regenerated ? '-' + $('seed').value : ''));
+      $('savenote').textContent = '';
       invalidate();
       refreshDiagram();
     }
   } catch (e) { $('benchnote').textContent = String(e); }
   $('load').disabled = false;
 });
+
+// -- the saved processes ------------------------------------------------------
+// The process in the box has a name, or none, and a baseline, the text saved
+// under that name, or none: the badge says whether the text is new, saved or
+// modified against the baseline, Save writes it, Rollback restores it, and
+// the panel lists what the server keeps.
+const DOC = { name: null, loaded: null, baseline: null };
+
+function setName(name) {
+  DOC.name = name && name.trim() ? name.trim() : null;
+  $('pname').textContent = DOC.name || 'untitled';
+  $('pname').classList.toggle('untitled', !DOC.name);
+  refreshState();
+}
+function refreshState() {
+  const text = $('proc').value;
+  const badge = $('pstate');
+  let state;
+  if (DOC.baseline === null || DOC.name === null || DOC.name !== DOC.loaded) state = 'new';
+  else state = text === DOC.baseline ? 'saved' : 'modified';
+  badge.hidden = false;
+  badge.textContent = state;
+  badge.className = 'badge ' + state;
+  $('rollback').hidden = state !== 'modified';
+}
+$('pname').addEventListener('click', () => {
+  $('pname').hidden = true;
+  const e = $('pname-edit');
+  e.value = DOC.name || '';
+  e.hidden = false;
+  e.focus(); e.select();
+});
+function endNameEdit(commit) {
+  const e = $('pname-edit');
+  if (e.hidden) return;
+  e.hidden = true;
+  $('pname').hidden = false;
+  if (commit) setName(e.value);
+}
+$('pname-edit').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') { ev.preventDefault(); endNameEdit(true); }
+  if (ev.key === 'Escape') { ev.preventDefault(); endNameEdit(false); }
+});
+$('pname-edit').addEventListener('blur', () => endNameEdit(true));
+
+async function saveProcess(overwrite) {
+  if (!DOC.name) {
+    $('savenote').textContent = 'Give the process a name first: click "untitled".';
+    $('pname').click();
+    return;
+  }
+  const text = $('proc').value;
+  const body = new URLSearchParams({ name: DOC.name, process: text, overwrite: overwrite ? '1' : '0' });
+  try {
+    const r = await fetch('/api/save', { method: 'POST', body });
+    const d = await r.json();
+    if (d.error) { $('savenote').textContent = d.error; return; }
+    if (d.exists) {
+      // the question takes the place of the note, no dialogue in front of the page
+      $('savenote').innerHTML = `A process named <b>${h(d.name)}</b> is saved already. Overwrite it?`
+        + ` <button type="button" id="ow-yes">yes</button><button type="button" id="ow-no" class="ghost">no</button>`;
+      $('ow-yes').addEventListener('click', () => saveProcess(true));
+      $('ow-no').addEventListener('click', () => { $('savenote').textContent = ''; });
+      return;
+    }
+    DOC.loaded = d.name; DOC.baseline = text;
+    $('savenote').textContent = `Saved as ${d.name}.`;
+    refreshState();
+    refreshSaved();
+  } catch (e) { $('savenote').textContent = String(e); }
+}
+$('save').addEventListener('click', () => {
+  // saving again under the name the text was loaded from needs no question
+  saveProcess(DOC.name !== null && DOC.name === DOC.loaded);
+});
+$('rollback').addEventListener('click', () => {
+  if (DOC.baseline === null) return;
+  $('proc').value = DOC.baseline;
+  $('savenote').textContent = `Back to the text saved as ${DOC.loaded}.`;
+  invalidate(); refreshDiagram(); refreshState();
+});
+
+async function refreshSaved() {
+  try {
+    const r = await fetch('/api/saved');
+    const d = await r.json();
+    const list = d.saved || [];
+    if (!list.length) {
+      $('savedbox').innerHTML = 'Nothing saved yet. Name the process above its text and press Save.';
+      return;
+    }
+    $('savedbox').innerHTML = '<ul>' + list.map(e =>
+      `<li><a data-name="${h(e.name)}">${h(e.name)}</a><span>${e.chars} characters</span></li>`).join('') + '</ul>';
+    $('savedbox').querySelectorAll('a[data-name]').forEach(a => a.addEventListener('click', () => loadSaved(a.dataset.name)));
+  } catch (e) { /* the server is away */ }
+}
+async function loadSaved(name) {
+  const body = new URLSearchParams({ name });
+  try {
+    const r = await fetch('/api/load', { method: 'POST', body });
+    const d = await r.json();
+    if (d.error) { $('savenote').textContent = d.error; return; }
+    $('proc').value = d.process;
+    DOC.loaded = d.name; DOC.baseline = d.process;
+    setName(d.name);
+    $('savenote').textContent = `Loaded ${d.name}.`;
+    invalidate(); refreshDiagram();
+  } catch (e) { $('savenote').textContent = String(e); }
+}
+refreshSaved();
 
 // The diagram follows the text: a quarter of a second after the last
 // keystroke the process is sent and drawn again; while it does not parse the
@@ -278,7 +425,7 @@ function invalidate() {
   LAST = null; SELECTED = null;
   $('out').innerHTML = '<p class="status">The process changed; press the button to compute its frontier.</p>';
 }
-$('proc').addEventListener('input', () => { invalidate(); refreshDiagram(); });
+$('proc').addEventListener('input', () => { invalidate(); refreshDiagram(); refreshState(); });
 
 // Zoom and pan on a drawing: the wheel zooms about the pointer, a drag pans,
 // the buttons zoom about the centre and fit the whole drawing again. The
