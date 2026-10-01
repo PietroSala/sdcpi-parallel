@@ -839,14 +839,10 @@ function render(d) {
   const cut = d.points.some(p => p.certified === false);
   const head = '<tr><th>#</th>' + order.map(j => `<th>${h(names[j])} ${arrow(d, j)}</th>`).join('')
              + '<th>decisions</th>' + (cut ? '<th>final</th>' : '') + '</tr>';
-  // two impacts are the plane of the two, the time, when it is in, as
-  // the colour of the points; two components are the plane as well; three
-  // or more impacts are parallel coordinates, one axis per component, a
-  // line per point, however many
+  // the plot, one per direction present: see plotHtml
   PLOT2 = null;
   SELECTED = null;
-  const impacts = order.filter(j => !(d.time && j === 0));
-  const plot = (k === 2 || impacts.length === 2) ? svg(d) : k >= 3 ? parallel(d) : '';
+  const plot = plotHtml(d);
   const playing = !!(d.live && LIVE && LIVE.playing);
   // while the view builds, the block keeps the height it has, so that a
   // snapshot drawn in its place never moves the page under the reader
@@ -1318,11 +1314,27 @@ function pointToWindow(p) {
 // through its values. The chosen point is drawn full, the others faint; a
 // line is chosen by clicking it, a wide transparent stroke under it making
 // the click easy.
-function parallel(d) {
+// The plot of the frontier, one graph per direction present, the
+// minimized components and the maximized ones apart. A group draws its
+// impacts: two of them in the plane, the time, when it is in, as the
+// colour of the points; one of them with the time in its group in the
+// plane of the two; three or more as parallel coordinates, the time an
+// axis of its own when it belongs to the group; one alone, or the time
+// alone, as a single axis of dots. The staircase of a plane frontier is
+// drawn only when the whole frontier has two components.
+function plotHtml(d) {
   const order = d_order(d);
+  if (order.length < 2) return '';
   const mins = order.filter(j => !isMax(d, j)), maxs = order.filter(j => isMax(d, j));
-  if (!mins.length || !maxs.length) return pcGroup(d, order, '');
-  return `<div class="pcs">${pcGroup(d, mins, 'minimize \u2193')}${pcGroup(d, maxs, 'maximize \u2191')}</div>`;
+  if (!mins.length || !maxs.length) return groupPlot(d, order, '');
+  return `<div class="pcs">${groupPlot(d, mins, 'minimize \u2193')}${groupPlot(d, maxs, 'maximize \u2191')}</div>`;
+}
+function groupPlot(d, group, title) {
+  const impacts = group.filter(j => !(d.time && j === 0));
+  const hasTime = !!(d.time && group.includes(0));
+  if (impacts.length === 2) return svg(d, impacts[0], impacts[1], !!d.time, title);
+  if (impacts.length === 1 && hasTime) return svg(d, 0, impacts[0], false, title);
+  return pcGroup(d, group, title);
 }
 
 // One group of axes: every component of `order`, a line per point through
@@ -1373,18 +1385,17 @@ function pcGroup(d, order, title) {
   </svg>`;
 }
 
-function svg(d) {
+function svg(d, ox, oy, byTime, title) {
   const order = d_order(d), names = d_names(d);
-  // the two impacts on the axes; with the time among them, the time and
-  // the one impact; with two impacts and the time in, the time is the
-  // colour of the points, from light for the shortest to dark for the
-  // longest, and the frontier is no staircase in the plane, a point may be
-  // beaten there and win on the time
-  const impacts = order.filter(j => !(d.time && j === 0));
-  const [ox, oy] = impacts.length === 2 ? impacts : order.slice(0, 2);
-  const byTime = !!(d.time && impacts.length === 2);
+  // with the time as the colour of the points, from light for the
+  // shortest to dark for the longest, the frontier is no staircase in the
+  // plane: a point may be beaten there and win on the time, or on a
+  // component of the other graph; the staircase is drawn when the whole
+  // frontier is these two components
+  const stair = order.length === 2;
   const P = d.points.map(p => [p.approx[ox], p.approx[oy]]);
-  const W = 460, H = 280, M = { l: 52, r: 18, t: byTime ? 26 : 14, b: 38 };
+  const top = title ? 14 : 0;
+  const W = 460, H = 280 + top, M = { l: 52, r: 18, t: (byTime ? 26 : 14) + top, b: 38 };
   const xs = P.map(p => p[0]), ys = P.map(p => p[1]);
   const pad = (a) => { const lo = Math.min(...a), hi = Math.max(...a);
                        const d = (hi - lo) || Math.abs(hi) || 1; return [lo - d * 0.12, hi + d * 0.12]; };
@@ -1392,7 +1403,7 @@ function svg(d) {
   const X = (v) => M.l + (v - x0) / (x1 - x0) * (W - M.l - M.r);
   const Y = (v) => H - M.b - (v - y0) / (y1 - y0) * (H - M.t - M.b);
   const tick = (lo, hi) => [lo, (lo + hi) / 2, hi].map(v => +v.toFixed(3));
-  let g = '';
+  let g = title ? `<text x="${M.l}" y="11" font-size="11" fill="#6e6e6e">${title}</text>` : '';
   for (const v of tick(x0, x1))
     g += `<line x1="${X(v)}" y1="${M.t}" x2="${X(v)}" y2="${H - M.b}" stroke="#eeede9"/>`
        + `<text x="${X(v)}" y="${H - M.b + 15}" font-size="11" fill="#6e6e6e" text-anchor="middle">${v}</text>`;
@@ -1408,9 +1419,9 @@ function svg(d) {
     return `hsl(32, 88%, ${Math.round(78 - 46 * f)}%)`;
   };
   const sorted = P.map((p, i) => [p, i]).sort((a, b) => a[0][0] - b[0][0]);
-  PLOT2 = { X, Y, P, stair: !byTime };
   let path = '';
-  if (!byTime) {
+  if (stair) {
+    PLOT2 = { X, Y, P, stair: true };
     for (let j = 0; j < sorted.length; j++) {
       const [p] = sorted[j];
       path += (j === 0 ? `M ${X(p[0])} ${Y(p[1])}` : ` L ${X(p[0])} ${Y(sorted[j - 1][0][1])} L ${X(p[0])} ${Y(p[1])}`);
@@ -1425,17 +1436,18 @@ function svg(d) {
          + ` stroke="${own}" stroke-width="1.4"${prov ? ' stroke-dasharray="2 1.5"' : ''} style="cursor:pointer"><title>${h(tip)}</title></circle>`;
   }).join('');
   // the legend of the time, a gradient from the shortest to the longest
+  const gid = `tgrad${ox}_${oy}`;
   const legend = byTime
-    ? `<defs><linearGradient id="tgrad" x1="0" x2="1" y1="0" y2="0">
+    ? `<defs><linearGradient id="${gid}" x1="0" x2="1" y1="0" y2="0">
          <stop offset="0" stop-color="${colour(tlo)}"/><stop offset="1" stop-color="${colour(thi)}"/></linearGradient></defs>
-       <text x="${W - M.r - 96}" y="12" font-size="10.5" fill="#b45309" text-anchor="end">${h(names[0])} ${fmt(tlo)}</text>
-       <rect x="${W - M.r - 90}" y="4" width="60" height="9" fill="url(#tgrad)" stroke="#d9d7d0" stroke-width="0.6"/>
-       <text x="${W - M.r - 26}" y="12" font-size="10.5" fill="#b45309">${fmt(thi)}</text>`
+       <text x="${W - M.r - 96}" y="${12 + top}" font-size="10.5" fill="#b45309" text-anchor="end">${h(names[0])} ${fmt(tlo)}</text>
+       <rect x="${W - M.r - 90}" y="${4 + top}" width="60" height="9" fill="url(#${gid})" stroke="#d9d7d0" stroke-width="0.6"/>
+       <text x="${W - M.r - 26}" y="${12 + top}" font-size="10.5" fill="#b45309">${fmt(thi)}</text>`
     : '';
-  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:100%;height:auto">
     ${g}${legend}
-    ${byTime ? '' : `<path data-stair="1" d="${path}" fill="none" stroke="#2a78d6" stroke-width="1.2"
-          stroke-dasharray="3 2" opacity="0.6"/>`}
+    ${stair ? `<path data-stair="1" d="${path}" fill="none" stroke="#2a78d6" stroke-width="1.2"
+          stroke-dasharray="3 2" opacity="0.6"/>` : ''}
     ${dots}
     <line x1="${M.l}" y1="${H - M.b}" x2="${W - M.r}" y2="${H - M.b}" stroke="#52514e"/>
     <line x1="${M.l}" y1="${M.t}" x2="${M.l}" y2="${H - M.b}" stroke="#52514e"/>
