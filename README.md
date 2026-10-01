@@ -40,6 +40,30 @@ is nothing to install beyond what is already there, it runs on the three
 desktop systems and inside a container alike, and it binds `127.0.0.1` and
 never every address, because it runs a computation for whoever asks.
 
+The block "Directions" of the form sets, per component, whether the frontier
+takes the least or the greatest expected value, the time included; every
+label of the page carries the arrow of its direction, the bounds on the
+expected values and the ranges beside the plot among them, and with both
+directions present the parallel coordinates split into two graphs, the
+minimized axes and the maximized ones. Beside the strategy of a chosen point
+the button "Use as bounds" writes its values into the bounds on the expected
+values, as the upper end of a minimized component and the lower end of a
+maximized one, so that the next search looks for the points at least as good.
+The table of the points shows a hundred rows at a time and the decisions of
+a strategy forty at a time, a pager above each, so that a frontier of some
+thousands of points costs nothing to draw.
+
+The search runs in the background and the page watches it: every half a
+second a snapshot, the minimal apexes recorded so far, is drawn in the place
+of the result with the counters of the moment, the plot and the cards
+alone; a point is final already when no node open at that moment has its
+lower bound below it, the workers publishing what they hold open as they
+go. Pause freezes the view and brings back the table, the ranges and the
+strategy, so that the snapshot is explored like a result; Play resumes it;
+Stop cuts the search, which then answers as at its time limit, with what it
+found and the certificate of the cut. A search started while one runs cuts
+the one before.
+
 
 ## The model
 
@@ -277,6 +301,7 @@ sdcpi optima  <instance>                     the exact least and greatest expect
 | `--print-size 1` | on `yes`, print how large the returned strategy is: its situations, how many stay undecided, how many decisions it prescribes |
 | `--print-strategy 1` | print the strategy itself; without this the decisions are not recorded, which is faster, and only the answer is reported |
 | `--window lo..hi,...` | the frontier among the strategies whose expected values lie within these ranges, one `lo..hi` per component in the order of the instance, either side empty for the bound at the initial state; a partial strategy whose interval, from its rejecting sum to its accepting one, misses the window in some component is left at once. On the page the same window is the block "Bounds on the expected values", one red slider per component between the two bounds of the process |
+| `--maximize a,b,...` | maximize these components, by name or index, the time included once `--time 1` is given: the frontier takes the greatest expected values there and the least elsewhere, a point being dominated when its minimized components are beaten from below and its maximized ones from above; a budget on a maximized component is a floor, and a window on it is written as the values are shown. An impact maximized is an impact negated, the engine minimizing the negation and the sign turned back wherever a value is shown; the time, which is no column of the impacts, is paid as minus the advance of the fast forward, and its two bounds swap at a parallel node, the lesser of the two uppers above and the sum below. The ablation of the lower bound gives way to the lower bound once a payment can be negative. On the page the same choice is the block "Directions", one dropdown per component, and every label carries the arrow of its direction |
 | `--time 1` | the expected time as the component zero of the cost, in front of the impacts, which keep their order; a budget by name calls it `time`. Every command that reads an instance takes it: `pareto` then takes the frontier over the time and the impacts, `bound` and `optima` report the time first, `to_prism` gives the model the reward `impact0`, paid `t_step` by every fast forward, and `to_objective` asks for it. The time is not one more impact: a task carries a zero there and the fast forward pays its advance once, so a parallel node lasts as long as the longer of its regions; its two bounds take the sum of the regions from above and the greater of the two lower bounds from below, and a task is bounded by what is left of its duration |
 
 ## Output
