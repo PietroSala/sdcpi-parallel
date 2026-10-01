@@ -594,7 +594,10 @@ pub fn emit(tree: &Tree, stem: &str, file_name: &str, history: bool) -> String {
             let plus = if pos == 0 { "  " } else { "+ " };
             w(format!(
                 "      {plus}(closes{t} ? {} : 0.0)   // {}",
-                dbl(tree.impact(t)[j]),
+                // the impact as the instance writes it: a maximized
+                // component is negated in the tree and the model keeps the
+                // reward non-negative, its objective asking for the most
+                dbl(tree.impact(t)[j].abs()),
                 tree.task_names[t as usize]
             ));
         }

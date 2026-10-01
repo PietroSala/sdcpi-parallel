@@ -645,6 +645,11 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
     let store = &shared.store;
     let cfg = &shared.cfg;
     let k = store.tree.k;
+    // the impact accumulated for certain is below every completion only
+    // while every payment is non-negative: with a maximized component, paid
+    // as its negation, the ablation of the lower bound is not sound, and the
+    // lower bound is read in its place
+    let monotone = !store.tree.maximized.iter().any(|&m| m);
     let mut scratch = zeros::<N>(k);
     let mut local: VecDeque<CtNode<'a, N>> = VecDeque::new();
     let mut node = first;
@@ -782,7 +787,7 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
                     );
                 }
             }
-            if cfg.ablation.reject_early() || closed {
+            if cfg.ablation.reject_early() || closed || !monotone {
                 node.frontier.rejecting(&mut scratch);
             } else {
                 node.frontier.accumulated(&mut scratch);
@@ -813,7 +818,7 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
                     return;
                 }
             }
-            if cfg.ablation.reject_early() || closed {
+            if cfg.ablation.reject_early() || closed || !monotone {
                 node.frontier.rejecting(&mut scratch);
             } else {
                 // the lower bound is ablated away, and what is left is not nothing:

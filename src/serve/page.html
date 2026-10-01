@@ -143,6 +143,17 @@
   #wbox .rhead button { width: auto; margin: 0; padding: 3px 9px; font-size: 12px; background: #fff;
                         color: var(--ink); border: 1px solid var(--line); border-radius: 4px; }
   #wbox .range { margin: 4px 0 8px; font-size: 12.5px; }
+  /* the directions of the components, one select per name */
+  #dirs .dir { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+               margin: 4px 0; font-size: 12.5px; }
+  #dirs select { width: auto; margin: 0; padding: 2px 6px; font-size: 12px; }
+  /* the pager of the table and of the decisions */
+  .pager { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); margin: 6px 0; }
+  .pager button { width: auto; margin: 0; padding: 2px 9px; font-size: 12px; }
+  .pager[hidden] { display: none; }
+  /* the parallel coordinates split by direction */
+  .pcs { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+  .plotrow > .pcs { flex: none; }
   .rng.red .fill { background: #d0342c; }
   .rng.red .thumb { border-color: #d0342c; }
   .rng.red .thumb:focus { outline-color: #f3c9c2; }
@@ -264,6 +275,12 @@
     of the impacts: a parallel node lasts as long as the longer of its regions, and the fast
     forward pays each advance once.</div>
 
+  <div id="dbox" hidden>
+    <div class="rhead" style="margin-top:14px"><span><b>Directions</b></span></div>
+    <div id="dirs"></div>
+    <div class="hint">Minimize or maximize each expected value. A point is on the frontier when no
+      other is at least as good in every direction and better in one.</div>
+  </div>
   <div id="wbox" hidden>
     <div class="rhead" style="margin-top:14px"><span><b>Bounds on the expected values</b></span>
       <button type="button" id="wreset">Reset</button></div>
@@ -751,6 +768,7 @@ $('f').addEventListener('submit', async (e) => {
     limit: $('limit').value,
     time: $('time').checked ? '1' : '0',
     window: windowField(),
+    maximize: dirsField(),
   });
   try {
     const r = await fetch('/api/start', { method: 'POST', body });
@@ -818,13 +836,8 @@ function render(d) {
   </div>`;
   const names = d_names(d), order = d_order(d);
   const cut = d.points.some(p => p.certified === false);
-  const head = '<tr><th>#</th>' + order.map(j => `<th>${h(names[j])}</th>`).join('')
+  const head = '<tr><th>#</th>' + order.map(j => `<th>${h(names[j])} ${arrow(d, j)}</th>`).join('')
              + '<th>decisions</th>' + (cut ? '<th>final</th>' : '') + '</tr>';
-  const rows = d.points.map((p, i) =>
-    `<tr data-i="${i}" class="${p.certified === false ? 'prov' : ''}"><td>${i + 1}</td>`
-    + order.map(j => `<td>${p.approx[j]}</td>`).join('')
-    + `<td>${p.steps.length}</td>`
-    + (cut ? `<td>${p.certified === false ? 'provisional' : 'yes'}</td>` : '') + `</tr>`).join('');
   // two impacts are a staircase in the plane; three or more are parallel
   // coordinates, one axis per impact, a line per point, however many
   PLOT2 = null;
@@ -840,17 +853,24 @@ function render(d) {
     + `<div class="strategy" id="str"><h3>Strategy</h3>
          <p class="status">Choose a point to see the strategy that attains it.</p></div>`
     + (cut ? `<label class="switch" style="margin-top:12px" for="onlyfinal"><input id="onlyfinal" type="checkbox"><span class="track"></span><span>Only the final points</span></label>` : '')
-    + `<div class="tablebox"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div>`
+    + `<div class="pager" id="tpager" hidden></div>`
+    + `<div class="tablebox"><table><thead>${head}</thead><tbody></tbody></table></div>`
     + `<p class="foot">${d.note || ''}</p>`;
-  $('out').querySelectorAll('tbody tr').forEach(tr => {
-    tr.addEventListener('click', () => select(+tr.dataset.i));
+  // the rows are painted a page at a time, and a click on any of them
+  // chooses its point
+  $('out').querySelector('tbody').addEventListener('click', (e) => {
+    const tr = e.target.closest('tr');
+    if (tr && tr.dataset.i !== undefined) select(+tr.dataset.i);
   });
+  KEEP = d.points.map(() => true);
+  TPAGE = 0;
+  paintTable();
   // after a cut, the provisional points can be hidden, in the table and in
   // the plot alike; the switch and the ranges are one filter
   const only = $('onlyfinal');
   if (only) only.addEventListener('change', applyFilter);
-  $('out').querySelectorAll('svg polyline[data-hit]').forEach(l => {
-    l.addEventListener('click', () => select(+l.dataset.hit));
+  $('out').querySelectorAll('svg polyline[data-hit], svg circle[data-i]').forEach(el => {
+    el.addEventListener('click', () => select(+(el.dataset.hit !== undefined ? el.dataset.hit : el.dataset.i)));
   });
   buildRanges(d);
   $('out').classList.toggle('live', playing);
@@ -966,7 +986,7 @@ function buildRanges(d) {
   box.innerHTML = `<div class="rhead"><span><b id="rcount">${d.points.length}</b> of ${d.points.length} points kept</span>`
     + `<button type="button" id="rreset">Reset</button></div>`
     + order.map(j => `<div class="range${RANGES[j].flat ? ' flat' : ''}">
-        <div class="rname"><span>${h(names[j])}</span><span class="rval" id="rval${j}"></span></div>
+        <div class="rname"><span>${h(names[j])} ${arrow(d, j)}</span><span class="rval" id="rval${j}"></span></div>
         <div class="rng" data-j="${j}"><div class="fill"></div>${thumbHtml(RANGES[j], names[j])}</div>
       </div>`).join('')
     + `<div class="hint">Drag an end, or click the track, to keep the points within the ranges; the switch on
@@ -992,19 +1012,45 @@ function paintRange(j) {
 // among the strategies whose expected values lie within it. An end moved
 // stays through the edits of the text, clamped to the new bounds, as long
 // as the component keeps its name.
+// The directions of the components, by name: a component is minimized
+// unless its direction is set to maximize, the time included. The server
+// reads them as the list of the maximized names, and every answer says
+// which components are maximized, so that the labels carry an arrow.
+let DIRS = {};
+const isMax = (d, j) => !!(d.maximized && d.maximized[j]);
+const arrow = (d, j) => isMax(d, j) ? '\u2191' : '\u2193';
+function dirsField() { return Object.keys(DIRS).filter(n => DIRS[n] === 'max').join(','); }
+function buildDirs(b) {
+  const rest = b.names.map((_, i) => i).filter(i => !(b.time && i === 0))
+                 .sort((x, y) => b.names[x].localeCompare(b.names[y]));
+  const order = b.time ? [0, ...rest] : rest;
+  const box = $('dirs');
+  $('dbox').hidden = order.length === 0;
+  box.innerHTML = order.map(i => {
+    const n = b.names[i], v = DIRS[n] === 'max' ? 'max' : 'min';
+    return `<div class="dir"><span>${h(n)}</span><select data-n="${h(n)}">
+      <option value="min"${v === 'min' ? ' selected' : ''}>minimize \u2193</option>
+      <option value="max"${v === 'max' ? ' selected' : ''}>maximize \u2191</option></select></div>`;
+  }).join('');
+  box.querySelectorAll('select').forEach(sel => sel.addEventListener('change', () => {
+    DIRS[sel.dataset.n] = sel.value;
+    refreshBounds();
+  }));
+}
 let WINDOW = {};   // by name: the extremes a, b and the ends lo, hi
 let WNAMES = [];   // the names in the order of the server, the time first
 let boundsTimer = null;
 function refreshBounds() {
   clearTimeout(boundsTimer);
   boundsTimer = setTimeout(async () => {
-    if ($('proc').value.trim() === '') { $('wbox').hidden = true; WNAMES = []; return; }
+    if ($('proc').value.trim() === '') { $('wbox').hidden = true; $('dbox').hidden = true; WNAMES = []; return; }
     const body = new URLSearchParams({ process: $('proc').value, name: DOC.name || '',
-                                       time: $('time').checked ? '1' : '0' });
+                                       time: $('time').checked ? '1' : '0',
+                                       maximize: dirsField() });
     try {
       const r = await fetch('/api/bounds', { method: 'POST', body });
       const d = await r.json();
-      if (d.names) buildWindow(d); else $('wbox').hidden = true;
+      if (d.names) { buildDirs(d); buildWindow(d); } else { $('wbox').hidden = true; $('dbox').hidden = true; }
     } catch (e) { /* the server is away */ }
   }, 250);
 }
@@ -1029,7 +1075,7 @@ function buildWindow(b) {
   box.innerHTML = order.map(i => {
     const n = b.names[i], R = WINDOW[n];
     return `<div class="range${R.flat ? ' flat' : ''}">
-      <div class="rname"><span>${h(n)}</span><span class="rval" id="wval${i}"></span></div>
+      <div class="rname"><span>${h(n)} ${arrow(b, i)}</span><span class="rval" id="wval${i}"></span></div>
       <div class="rng red" data-w="${i}"><div class="fill"></div>${thumbHtml(R, n)}</div></div>`;
   }).join('');
   order.forEach(i => paintTrack(box.querySelector(`.rng[data-w="${i}"]`), WINDOW[b.names[i]], $('wval' + i)));
@@ -1057,13 +1103,51 @@ function windowField() {
 $('time').addEventListener('change', refreshBounds);
 
 // the one filter: the switch on the final points and every range at once
+// The table of the points, a page at a time: of the points kept by the
+// ranges and the switch, PAGE rows per page, the pager above the table.
+// Only the page in view is in the document, so that a frontier of some
+// thousands of points costs nothing to draw again.
+const PAGE = 100;
+let KEEP = [], TPAGE = 0;
+function keptIndices() {
+  const kept = [];
+  KEEP.forEach((k, i) => { if (k) kept.push(i); });
+  return kept;
+}
+function rowHtml(d, p, i, order, loops, cut) {
+  return `<tr data-i="${i}" class="${(p.certified === false ? 'prov ' : '') + (SELECTED === i ? 'sel' : '')}"><td>${i + 1}</td>`
+    + order.map(j => `<td>${p.approx[j]}</td>`).join('')
+    + `<td>${p.steps.length}</td>`
+    + (cut ? `<td>${p.certified === false ? 'provisional' : 'yes'}</td>` : '') + `</tr>`;
+}
+function paintTable() {
+  const d = LAST, body = $('out').querySelector('tbody'), pager = $('tpager');
+  if (!d || !body) return;
+  const kept = keptIndices();
+  const pages = Math.max(1, Math.ceil(kept.length / PAGE));
+  TPAGE = Math.min(Math.max(TPAGE, 0), pages - 1);
+  const order = d_order(d), cut = d.points.some(p => p.certified === false), loops = d.points.some(p => p.continued);
+  const slice = kept.slice(TPAGE * PAGE, (TPAGE + 1) * PAGE);
+  body.innerHTML = slice.map(i => rowHtml(d, d.points[i], i, order, loops, cut)).join('');
+  if (!pager) return;
+  pager.hidden = kept.length <= PAGE;
+  if (pager.hidden) { pager.innerHTML = ''; return; }
+  pager.innerHTML = `<span>points ${TPAGE * PAGE + 1}\u2013${Math.min(kept.length, (TPAGE + 1) * PAGE)} of ${kept.length}</span>`
+    + `<button type="button" id="tprev"${TPAGE === 0 ? ' disabled' : ''}>\u2039</button>`
+    + `<button type="button" id="tnext"${TPAGE >= pages - 1 ? ' disabled' : ''}>\u203a</button>`;
+  $('tprev').addEventListener('click', () => { TPAGE--; paintTable(); });
+  $('tnext').addEventListener('click', () => { TPAGE++; paintTable(); });
+}
+
 function applyFilter() {
   const d = LAST;
   if (!d) return;
   const only = $('onlyfinal'), finals = !!(only && only.checked);
   const keep = d.points.map(p => (!finals || p.certified !== false)
     && RANGES.every((R, j) => { const v = +p.approx[j]; return v >= R.lo && v <= R.hi; }));
-  $('out').querySelectorAll('tbody tr').forEach(tr => { tr.hidden = !keep[+tr.dataset.i]; });
+  KEEP = keep;
+  TPAGE = 0;
+  paintTable();
   $('out').querySelectorAll('svg [data-i], svg [data-hit]').forEach(el => {
     const i = +(el.dataset.i !== undefined ? el.dataset.i : el.dataset.hit);
     el.style.display = keep[i] ? '' : 'none';
@@ -1135,6 +1219,11 @@ function revealRow(tr) {
 function select(i, reveal = true) {
   SELECTED = i;
   const p = LAST.points[i];
+  if (reveal) {
+    // the row of the point is shown on its page of the table
+    const pos = keptIndices().indexOf(i);
+    if (pos >= 0 && Math.floor(pos / PAGE) !== TPAGE) { TPAGE = Math.floor(pos / PAGE); paintTable(); }
+  }
   $('out').querySelectorAll('tbody tr').forEach(tr => {
     const on = +tr.dataset.i === i;
     tr.classList.toggle('sel', on);
@@ -1151,34 +1240,59 @@ function select(i, reveal = true) {
     l.classList.toggle('sel', on);
     if (on) l.parentNode.appendChild(l);   // in front of every other line
   });
-  const lines = p.steps.length
-    ? p.steps.map(st => `<div>${sentence(st)}</div>`).join('')
-    : '<p class="status">No choice of the controller is decided on this branch.</p>';
+  const lines = '<div id="slines"></div>';
   // the expected impacts of the point, exact, each with its name and, when
   // the exact value is a fraction, its decimal beside it
   const names = d_names(LAST);
   const values = d_order(LAST).map(j => {
     const v = p.value[j];
     const dec = v.includes('/') ? ` (${String(+p.approx[j])})` : '';
-    return `<span style="margin-right:14px">${h(names[j])} <code>${v}</code>${dec}</span>`;
+    return `<span style="margin-right:14px">${h(names[j])} ${arrow(LAST, j)} <code>${v}</code>${dec}</span>`;
   }).join('');
   $('str').innerHTML = `<h3>Strategy of point ${i + 1} <button type="button" id="tobounds" class="small ghost"
-      title="the values of this point become the upper bounds of the search">Use as upper bounds</button></h3>`
+      title="the values of this point bound the next search: at most on a minimized component, at least on a maximized one">Use as bounds</button></h3>`
     + `<div style="margin-bottom:7px">expected: ${values}</div>` + lines;
   $('tobounds').addEventListener('click', () => pointToWindow(p));
+  SPAGE_IDX = 0;
+  paintStrategyLines(p);
 }
 
-// The values of a point as the upper bounds of the window: the search then
-// looks below this point, the lower ends left where they are.
+// The decisions of the strategy, SPAGE at a time, with a pager when there
+// are more.
+const SPAGE = 40;
+let SPAGE_IDX = 0;
+function paintStrategyLines(p) {
+  const box = $('slines');
+  if (!box) return;
+  const n = p.steps.length;
+  if (!n) { box.innerHTML = '<p class="status">No choice of the controller is decided on this branch.</p>'; return; }
+  const pages = Math.ceil(n / SPAGE);
+  SPAGE_IDX = Math.min(Math.max(SPAGE_IDX, 0), pages - 1);
+  const from = SPAGE_IDX * SPAGE, to = Math.min(n, from + SPAGE);
+  const pager = pages > 1
+    ? `<div class="pager"><span>decisions ${from + 1}\u2013${to} of ${n}</span>`
+      + `<button type="button" id="sprev"${SPAGE_IDX === 0 ? ' disabled' : ''}>\u2039</button>`
+      + `<button type="button" id="snext"${SPAGE_IDX >= pages - 1 ? ' disabled' : ''}>\u203a</button></div>`
+    : '';
+  box.innerHTML = pager + p.steps.slice(from, to).map(st => `<div>${sentence(st)}</div>`).join('');
+  const prev = $('sprev'), next = $('snext');
+  if (prev) prev.addEventListener('click', () => { SPAGE_IDX--; paintStrategyLines(p); });
+  if (next) next.addEventListener('click', () => { SPAGE_IDX++; paintStrategyLines(p); });
+}
+
+// The values of a point as bounds of the window: the search then looks for
+// the points at least as good as this one, the value an upper end on a
+// minimized component and a lower end on a maximized one, the other end
+// left where it is.
 function pointToWindow(p) {
   if (!LAST || !WNAMES.length) return;
   const names = d_names(LAST);
   names.forEach((n, j) => {
     const R = WINDOW[n];
     if (!R || R.flat) return;
-    const v = +p.approx[j];
-    R.hi = Math.min(Math.max(v, R.a), R.b);
-    if (R.lo > R.hi) R.lo = R.hi;
+    const v = Math.min(Math.max(+p.approx[j], R.a), R.b);
+    if (isMax(LAST, j)) { R.lo = v; if (R.hi < R.lo) R.hi = R.lo; }
+    else { R.hi = v; if (R.lo > R.hi) R.lo = R.hi; }
     const i = WNAMES.indexOf(n);
     const track = $('window').querySelector(`.rng[data-w="${i}"]`);
     if (track) paintTrack(track, R, $('wval' + i));
@@ -1192,33 +1306,50 @@ function pointToWindow(p) {
 // line is chosen by clicking it, a wide transparent stroke under it making
 // the click easy.
 function parallel(d) {
-  const all = d_names(d), order = d_order(d), k = order.length;
+  const order = d_order(d);
+  const mins = order.filter(j => !isMax(d, j)), maxs = order.filter(j => isMax(d, j));
+  if (!mins.length || !maxs.length) return pcGroup(d, order, '');
+  return `<div class="pcs">${pcGroup(d, mins, 'minimize \u2193')}${pcGroup(d, maxs, 'maximize \u2191')}</div>`;
+}
+
+// One group of axes: every component of `order`, a line per point through
+// its values, or a dot per point when the group has one axis.
+function pcGroup(d, order, title) {
+  const all = d_names(d), k = order.length;
   const names = order.map(j => all[j]);
-  const step = 92, M = { l: 46, r: 46, t: 24, b: 40 }, H = 280;
-  const W = M.l + step * (k - 1) + M.r;
+  const top = title ? 16 : 0;
+  const step = 92, M = { l: 46, r: 46, t: 24 + top, b: 40 }, H = 280 + top;
+  const W = M.l + step * Math.max(k - 1, 0) + M.r;
   const cols = order.map(j => d.points.map(p => p.approx[j]));
   const lo = cols.map(c => Math.min(...c)), hi = cols.map(c => Math.max(...c));
   const X = (j) => M.l + step * j;
   const Y = (j, v) => { const d = (hi[j] - lo[j]) || Math.abs(hi[j]) || 1;
                         return H - M.b - (v - lo[j]) / d * (H - M.t - M.b); };
   const fmt = (v) => String(+(+v).toFixed(3));
-  let axes = '';
+  let axes = title ? `<text x="${W / 2}" y="12" font-size="11" fill="#6e6e6e" text-anchor="middle">${title}</text>` : '';
   for (let j = 0; j < k; j++) {
-    // the time, when it is in, is the first axis and wears its own colour
-    const tm = d.time && j === 0;
+    // the time, when it is in, wears its own colour
+    const tm = d.time && order[j] === 0;
     axes += `<line x1="${X(j)}" y1="${M.t}" x2="${X(j)}" y2="${H - M.b}" stroke="${tm ? '#e07b00' : '#52514e'}"/>`
-      + `<text x="${X(j)}" y="${H - M.b + 16}" font-size="11" fill="${tm ? '#b45309' : '#0b0b0b'}" text-anchor="middle">${h(names[j])}</text>`
+      + `<text x="${X(j)}" y="${H - M.b + 16}" font-size="11" fill="${tm ? '#b45309' : '#0b0b0b'}" text-anchor="middle">${h(names[j])} ${arrow(d, order[j])}</text>`
       + `<text x="${X(j)}" y="${M.t - 8}" font-size="10.5" fill="#6e6e6e" text-anchor="middle">${fmt(hi[j])}</text>`
       + `<text x="${X(j)}" y="${H - M.b + 29}" font-size="10.5" fill="#6e6e6e" text-anchor="middle">${fmt(lo[j])}</text>`;
   }
+  const tmFirst = d.time && order[0] === 0;
   const lines = d.points.map((p, i) => {
     const P = order.map((oj, j) => `${X(j)},${Y(j, p.approx[oj])}`);
     const prov = p.certified === false ? ' data-prov="1"' : '';
     const dash = p.certified === false ? ' stroke-dasharray="5 4"' : '';
+    if (k === 1) {
+      // one axis: a dot per point, chosen by a click as in the plane
+      const [x, y] = P[0].split(',');
+      return `<circle data-i="${i}"${prov} cx="${x}" cy="${y}" r="3" fill="${p.certified === false ? '#fff' : '#2a78d6'}"`
+           + ` stroke="#2a78d6" stroke-width="1.4"${p.certified === false ? ' stroke-dasharray="2 1.5"' : ''} style="cursor:pointer"/>`;
+    }
     const seg = (pts, cls) => `<polyline data-i="${i}"${prov} class="${cls}" points="${pts.join(' ')}"${dash}/>`;
-    // with the time in, the segment from its axis to the next is drawn apart,
-    // in the colour of the time; the rest of the line keeps its colour
-    const line = d.time ? seg(P.slice(0, 2), 'pc tm') + seg(P.slice(1), 'pc') : seg(P, 'pc');
+    // with the time first, the segment from its axis to the next is drawn
+    // apart, in the colour of the time; the rest of the line keeps its colour
+    const line = tmFirst ? seg(P.slice(0, 2), 'pc tm') + seg(P.slice(1), 'pc') : seg(P, 'pc');
     return line
          + `<polyline data-hit="${i}"${prov} points="${P.join(' ')}" fill="none" stroke="transparent" stroke-width="10" style="cursor:pointer"/>`;
   }).join('');
@@ -1267,9 +1398,9 @@ function svg(d) {
     <line x1="${M.l}" y1="${H - M.b}" x2="${W - M.r}" y2="${H - M.b}" stroke="#52514e"/>
     <line x1="${M.l}" y1="${M.t}" x2="${M.l}" y2="${H - M.b}" stroke="#52514e"/>
     <text x="${(M.l + W - M.r) / 2}" y="${H - 6}" font-size="11" fill="#0b0b0b"
-          text-anchor="middle">${h(names[ox])}</text>
+          text-anchor="middle">${h(names[ox])} ${arrow(d, ox)}</text>
     <text x="14" y="${(M.t + H - M.b) / 2}" font-size="11" fill="#0b0b0b" text-anchor="middle"
-          transform="rotate(-90 14 ${(M.t + H - M.b) / 2})">${h(names[oy])}</text>
+          transform="rotate(-90 14 ${(M.t + H - M.b) / 2})">${h(names[oy])} ${arrow(d, oy)}</text>
   </svg>`;
 }
 </script>

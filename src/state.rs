@@ -246,7 +246,10 @@ impl<'t> Engine<'t> {
         // The time as the component zero of the cost: the fast forward pays
         // its advance there, once, whatever the number of tasks it moves.
         if tree.time {
-            impact[0] = impact[0].add(&N::from_u32(t as u32));
+            // the time maximized is paid as minus the advance, the engine
+            // minimizing the negation
+            let dt = N::from_u32(t as u32);
+            impact[0] = if tree.maximized[0] { impact[0].sub(&dt) } else { impact[0].add(&dt) };
         }
         // The progress of a running internal node is not advanced: it is never
         // read, and quotienting it away is what makes a choice state one byte

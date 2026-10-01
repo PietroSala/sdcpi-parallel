@@ -99,6 +99,11 @@ the grammar of parse, written inline or in the file
   names first appear, the vectors mapped by that order.
 
 options of every command that reads an instance
+  --maximize a,b,...    maximize these impacts, by name or index, the time
+                        included: the frontier takes the greatest expected
+                        values there and the least elsewhere, a budget on
+                        them is a floor, and the engine minimizes their
+                        negation
   --time 1              the expected time as the component zero of the cost,
                         in front of the impacts, which keep their order: a
                         fast forward pays its advance there, a task is
@@ -277,6 +282,14 @@ fn load(args: &Args) -> Result<(PathBuf, Tree), String> {
     // the expected time as the component zero, in front of the impacts,
     // for every command that reads an instance
     let tree = if args.flag("time").is_some() { tree.with_time() } else { tree };
+    // the components maximized, by name or index: their columns negated
+    let tree = match args.flag("maximize") {
+        Some(m) => {
+            let names: Vec<String> = m.split(',').map(|t| t.trim().to_string()).collect();
+            tree.with_directions(&names)?
+        }
+        None => tree,
+    };
     Ok((path, tree))
 }
 
@@ -547,7 +560,8 @@ fn cmd_optima(args: &[String]) -> i32 {
                 // component worth 2e-7, and a reader that pads such a number to
                 // make it a bound no policy can fail would be padding under its
                 // own rounding
-                println!("component {c}  min {:e}  max {:e}", o.min[c], o.max[c]);
+                let (lo, hi) = if tree.maximized[c] { (-o.max[c], -o.min[c]) } else { (o.min[c], o.max[c]) };
+                println!("component {c}  min {:e}  max {:e}", lo, hi);
             }
             0
         }
@@ -675,7 +689,7 @@ fn cmd_to_objective(args: &[String]) -> i32 {
         // The frontier of every expected impact, the question the model
         // checker answers with points and no strategy.
         (0..tree.k)
-            .map(|j| format!("R{{\"impact{j}\"}}min=? [ F n{}=-2 ]", tree.root))
+            .map(|j| format!("R{{\"impact{j}\"}}{}=? [ F n{}=-2 ]", if tree.maximized[j] { "max" } else { "min" }, tree.root))
             .collect()
     } else {
         let spec = match budget_spec(&args) {
@@ -688,7 +702,7 @@ fn cmd_to_objective(args: &[String]) -> i32 {
         };
         b.iter()
             .enumerate()
-            .map(|(j, v)| format!("R{{\"impact{j}\"}}<={} [ F n{}=-2 ]", v.text, tree.root))
+            .map(|(j, v)| format!("R{{\"impact{j}\"}}{}{} [ F n{}=-2 ]", if tree.maximized[j] { ">=" } else { "<=" }, v.text, tree.root))
             .collect()
     };
     let prop = format!("multi({})\n", parts.join(", "));
@@ -908,14 +922,25 @@ fn run_determine<N: Num>(
     // recording costs nothing measurable, 1.7367 s against 1.7363 s on
     // an instance that searches for over a second, and without it the size
     // of the partial strategy cannot be told
+    // a budget on a maximized component is a floor: the engine reads it on
+    // the negation
+    let shown_b = threshold.clone();
+    let threshold: Vec<N> = threshold
+        .into_iter()
+        .enumerate()
+        .map(|(c, v)| if tree.maximized.get(c).copied().unwrap_or(false) { N::zero().sub(&v) } else { v })
+        .collect();
     let cfg = opts.config(threshold.clone(), print_strategy || print_size);
     let (answer, stats) = search::search(tree, cfg);
 
-    let approx: Vec<f64> = threshold.iter().map(|b| b.to_f64()).collect();
+    let approx: Vec<f64> = shown_b.iter().map(|b| b.to_f64()).collect();
     println!("instance       {}", tree.meta.key);
     println!("B              {}", fmt_vec(&approx));
     if exact {
-        println!("B exact        {}", fmt_exact(&threshold));
+        println!("B exact        {}", fmt_exact(&shown_b));
+    }
+    if tree.maximized.iter().any(|&m| m) {
+        println!("maximized      [{}]", tree.maximized_names().join(", "));
     }
     println!(
         "answer         {}",
@@ -950,7 +975,13 @@ fn run_determine<N: Num>(
     );
     if let Answer::Yes(s) = &answer {
         if exact {
-            println!("accepting      {}", fmt_exact(&s.accepting));
+            let shown: Vec<N> = s
+                .accepting
+                .iter()
+                .enumerate()
+                .map(|(c, v)| if tree.maximized.get(c).copied().unwrap_or(false) { N::zero().sub(v) } else { v.clone() })
+                .collect();
+            println!("accepting      {}", fmt_exact(&shown));
         }
         if print_size || print_strategy {
             // How large the partial strategy is, which is the third thing a
@@ -1087,7 +1118,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
             anytime,
             precision,
             components,
-            window,
+            window: directed_window(&tree, window),
             live: None,
             library,
             search: Config {
@@ -1130,15 +1161,23 @@ fn cmd_pareto(args: &[String]) -> i32 {
     }
     let comps: Vec<String> = report.components.iter().map(|c| c.to_string()).collect();
     println!("components     [{}]", comps.join(", "));
+    if tree.maximized.iter().any(|&m| m) {
+        println!("maximized      [{}]", tree.maximized_names().join(", "));
+    }
     if let Some(w) = &report.window {
         let parts: Vec<String> = w
             .iter()
-            .map(|(a, b)| format!("{:.6}..{:.6}", pareto::approx(a), pareto::approx(b)))
+            .enumerate()
+            .map(|(c, (a, b))| {
+                let (a, b) = if tree.maximized.get(c).copied().unwrap_or(false) { (-b.clone(), -a.clone()) } else { (a.clone(), b.clone()) };
+                format!("{:.6}..{:.6}", pareto::approx(&a), pareto::approx(&b))
+            })
             .collect();
         println!("window         [{}], {} points found outside it", parts.join(", "), report.outside);
     }
-    println!("U at s0        {}", dec(&report.upper));
-    println!("L at s0        {}", dec(&report.lower));
+    let (shown_u, shown_l) = tree.shown_bounds(&report.upper, &report.lower);
+    println!("U at s0        {}", dec(&shown_u));
+    println!("L at s0        {}", dec(&shown_l));
     let ticks: Vec<String> = report.ticks.iter().map(|t| t.to_string()).collect();
     println!("ticks          [{}]", ticks.join(", "));
     let bits: Vec<String> = report.bits.iter().map(|b| b.to_string()).collect();
@@ -1184,8 +1223,9 @@ fn cmd_pareto(args: &[String]) -> i32 {
         );
     }
     for (i, p) in report.points.iter().enumerate() {
-        println!("point {:<9}{}", i + 1, dec(&p.value));
-        println!("  exact        {}", rat(&p.value));
+        let shown = tree.shown_vec(&p.value);
+        println!("point {:<9}{}", i + 1, dec(&shown));
+        println!("  exact        {}", rat(&shown));
         println!(
             "  origin       {}",
             match p.origin {
@@ -1272,8 +1312,10 @@ fn json_report(tree: &Tree, r: &pareto::Report, elapsed: Duration, decisions: bo
         }
     ));
     o.push_str(&format!("  \"components\": {},\n", nums(&r.components)));
-    o.push_str(&format!("  \"upper\": {},\n", strs(&r.upper)));
-    o.push_str(&format!("  \"lower\": {},\n", strs(&r.lower)));
+    let (shown_u, shown_l) = tree.shown_bounds(&r.upper, &r.lower);
+    o.push_str(&format!("  \"maximized\": {},\n", strs(&tree.maximized_names())));
+    o.push_str(&format!("  \"upper\": {},\n", strs(&shown_u)));
+    o.push_str(&format!("  \"lower\": {},\n", strs(&shown_l)));
     o.push_str(&format!("  \"ticks\": {},\n", strs(&r.ticks)));
     o.push_str(&format!("  \"bits\": {},\n", nums(&r.bits)));
     o.push_str(&format!(
@@ -1310,7 +1352,7 @@ fn json_report(tree: &Tree, r: &pareto::Report, elapsed: Duration, decisions: bo
     for (i, p) in r.points.iter().enumerate() {
         let approx: Vec<String> = p.value.iter().map(|v| format!("{:.9}", pareto::approx(v))).collect();
         o.push_str("    {\n");
-        o.push_str(&format!("      \"value\": {},\n", strs(&p.value)));
+        o.push_str(&format!("      \"value\": {},\n", strs(&tree.shown_vec(&p.value))));
         o.push_str(&format!("      \"certified\": {},\n", p.certified));
         o.push_str(&format!("      \"approx\": [{}],\n", approx.join(", ")));
         o.push_str(&format!(
@@ -1361,8 +1403,12 @@ fn cmd_bound(args: &[String]) -> i32 {
     let engine_state = store.engine.initial_state();
     let b = bound::bounds::<f64>(&tree, &engine_state);
     println!("instance   {}", tree.meta.key);
-    println!("U at s0    {}", fmt_vec(&b.upper));
-    println!("L at s0    {}", fmt_vec(&b.lower));
+    let (shown_u, shown_l) = tree.shown_bounds_f64(&b.upper, &b.lower);
+    println!("U at s0    {}", fmt_vec(&shown_u));
+    println!("L at s0    {}", fmt_vec(&shown_l));
+    if tree.maximized.iter().any(|&m| m) {
+        println!("maximized  [{}]", tree.maximized_names().join(", "));
+    }
     let initial = match store.initial_histories() {
         Ok(v) => v,
         Err(e) => return fail(&format!("{e:?}")),
@@ -1381,8 +1427,9 @@ fn cmd_bound(args: &[String]) -> i32 {
     if args.flag("no-exact").is_none() {
         match exact::optima(&store, 2_000_000usize) {
             Ok(o) => {
-                println!("exact min  {}", fmt_vec(&o.min));
-                println!("exact max  {}", fmt_vec(&o.max));
+                let (shown_max, shown_min) = tree.shown_bounds_f64(&o.max, &o.min);
+                println!("exact min  {}", fmt_vec(&shown_min));
+                println!("exact max  {}", fmt_vec(&shown_max));
             }
             Err(e) => println!("exact      unavailable: {e:?}"),
         }
@@ -1402,3 +1449,23 @@ fn cmd_bound(args: &[String]) -> i32 {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/// A window written as the values are shown, read by the engine: on a
+/// maximized component the two ends swap and change sign.
+fn directed_window(
+    tree: &Tree,
+    window: Option<Vec<(Option<num_rational::BigRational>, Option<num_rational::BigRational>)>>,
+) -> Option<Vec<(Option<num_rational::BigRational>, Option<num_rational::BigRational>)>> {
+    window.map(|w| {
+        w.into_iter()
+            .enumerate()
+            .map(|(c, (lo, hi))| {
+                if tree.maximized.get(c).copied().unwrap_or(false) {
+                    (hi.map(|x| -x), lo.map(|x| -x))
+                } else {
+                    (lo, hi)
+                }
+            })
+            .collect()
+    })
+}

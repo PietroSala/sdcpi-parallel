@@ -108,6 +108,12 @@ pub struct Tree {
     /// forward pays its advance there and the recursion of the bounds treats
     /// the component apart: see `with_time`.
     pub time: bool,
+    /// Whether a component is maximized, one flag per component: its
+    /// column of the impacts is negated, so that the engine minimizes it as
+    /// every other, and the sign is turned back wherever a value is shown.
+    /// The time maximized is paid as minus the advance of the fast forward,
+    /// and its two bounds swap.
+    pub maximized: Vec<bool>,
 }
 
 impl Tree {
@@ -187,6 +193,8 @@ impl Tree {
         }
         meta.impact_names.insert(0, "time".to_string());
         meta.dimensions = k;
+        let mut maximized = self.maximized.clone();
+        maximized.insert(0, false);
         Tree {
             nodes: self.nodes.clone(),
             root: self.root,
@@ -201,7 +209,98 @@ impl Tree {
             task_names: self.task_names.clone(),
             meta,
             time: true,
+            maximized,
         }
+    }
+
+    /// The same process with these components maximized, named by their
+    /// impact name or their index: their columns are negated, so that the
+    /// engine minimizes them, and `maximized` remembers which they are. The
+    /// time, named once it is in, is maximized by its flag alone, the fast
+    /// forward and the bounds reading it.
+    pub fn with_directions(&self, names: &[String]) -> Result<Tree, String> {
+        let mut tree = self.clone();
+        for name in names {
+            let n = name.trim();
+            if n.is_empty() {
+                continue;
+            }
+            let c = match tree.meta.impact_names.iter().position(|m| m == n) {
+                Some(c) => c,
+                None => match n.parse::<usize>() {
+                    Ok(c) if c < tree.k => c,
+                    _ => {
+                        return Err(format!(
+                            "no impact is named {n:?}; the instance declares [{}]",
+                            tree.meta.impact_names.join(", ")
+                        ))
+                    }
+                },
+            };
+            if tree.maximized[c] {
+                continue;
+            }
+            tree.maximized[c] = true;
+            let k = tree.k;
+            for id in 0..tree.nodes.len() {
+                tree.impacts[id * k + c] = -tree.impacts[id * k + c];
+                tree.impacts_exact[id * k + c] = -tree.impacts_exact[id * k + c].clone();
+            }
+        }
+        Ok(tree)
+    }
+
+    /// The names of the maximized components.
+    pub fn maximized_names(&self) -> Vec<String> {
+        (0..self.k)
+            .filter(|&c| self.maximized[c])
+            .map(|c| match self.meta.impact_names.get(c) {
+                Some(n) if !n.is_empty() => n.clone(),
+                _ => c.to_string(),
+            })
+            .collect()
+    }
+
+    /// A value as it is shown: the sign turned back on a maximized component.
+    pub fn shown_vec(&self, v: &[BigRational]) -> Vec<BigRational> {
+        v.iter()
+            .enumerate()
+            .map(|(c, x)| if self.maximized.get(c).copied().unwrap_or(false) { -x.clone() } else { x.clone() })
+            .collect()
+    }
+
+    /// Two bounds as they are shown: on a maximized component the upper
+    /// bound of the negation is minus the lower bound of the value, and the
+    /// other way round.
+    pub fn shown_bounds(&self, upper: &[BigRational], lower: &[BigRational]) -> (Vec<BigRational>, Vec<BigRational>) {
+        let mut u = Vec::with_capacity(upper.len());
+        let mut l = Vec::with_capacity(lower.len());
+        for c in 0..upper.len() {
+            if self.maximized.get(c).copied().unwrap_or(false) {
+                u.push(-lower[c].clone());
+                l.push(-upper[c].clone());
+            } else {
+                u.push(upper[c].clone());
+                l.push(lower[c].clone());
+            }
+        }
+        (u, l)
+    }
+
+    /// The same on doubles.
+    pub fn shown_bounds_f64(&self, upper: &[f64], lower: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let mut u = Vec::with_capacity(upper.len());
+        let mut l = Vec::with_capacity(lower.len());
+        for c in 0..upper.len() {
+            if self.maximized.get(c).copied().unwrap_or(false) {
+                u.push(-lower[c]);
+                l.push(-upper[c]);
+            } else {
+                u.push(upper[c]);
+                l.push(lower[c]);
+            }
+        }
+        (u, l)
     }
 
     pub fn read(path: &Path) -> Result<Tree, ParseError> {
@@ -328,6 +427,7 @@ impl<'a> Parser<'a> {
             task_names: std::mem::take(&mut self.names),
             meta: std::mem::take(&mut self.meta),
             time: false,
+            maximized: vec![false; k],
         };
         for id in 1..=tree.n_nodes {
             match tree.kind(id) {

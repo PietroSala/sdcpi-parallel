@@ -83,6 +83,9 @@ fn rec<N: Num>(t: &Tree, s: &[i8], v: u32, st: &mut Vec<N>) {
                 let sv = s[v as usize];
                 let left = n.duration as i32 - if sv >= 0 { sv as i32 } else { 0 };
                 i[0] = N::from_u32(left as u32);
+                if t.maximized[0] {
+                    i[0] = N::zero().sub(&i[0]);
+                }
             }
             st.extend(i.iter().cloned());
             st.extend(i);
@@ -108,7 +111,7 @@ fn rec<N: Num>(t: &Tree, s: &[i8], v: u32, st: &mut Vec<N>) {
         Kind::Parallel => {
             rec(t, s, n.low, st);
             rec(t, s, n.high, st);
-            fold_parallel(st, k, t.time);
+            fold_parallel(st, k, t.time, t.time && t.maximized[0]);
         }
 
         Kind::Choice | Kind::Nature => {
@@ -157,13 +160,18 @@ fn fold_sum<N: Num>(st: &mut Vec<N>, k: usize) {
 
 /// `X(v) = X(low) + X(high)` on both bounds, except that with the time in the
 /// lower bound of the component zero is `max(L(low)_0, L(high)_0)`: the node
-/// lasts as long as the longer of its regions.
+/// lasts as long as the longer of its regions. With the time maximized the
+/// component zero is minus the time, and the two bounds swap: the upper
+/// bound is `min(U(low)_0, U(high)_0)`, minus the greater lower bound of the
+/// time, and the lower bound is the sum, minus the sum of the upper bounds.
 #[inline]
-fn fold_parallel<N: Num>(st: &mut Vec<N>, k: usize, time: bool) {
+fn fold_parallel<N: Num>(st: &mut Vec<N>, k: usize, time: bool, time_max: bool) {
     let base = st.len() - 4 * k;
     for j in 0..2 * k {
-        st[base + j] = if time && j == k {
+        st[base + j] = if time && j == k && !time_max {
             st[base + j].max(&st[base + 2 * k + j])
+        } else if time && j == 0 && time_max {
+            st[base + j].min(&st[base + 2 * k + j])
         } else {
             st[base + j].add(&st[base + 2 * k + j])
         };

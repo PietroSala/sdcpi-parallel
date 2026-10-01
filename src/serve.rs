@@ -40,7 +40,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::num::{self, Exact, Num};
+use crate::num::{self, Exact};
 use crate::pareto;
 use crate::search::Config;
 use crate::tree::{Kind, Tree};
@@ -901,6 +901,25 @@ fn diagram(body: &str, bench: &Bench) -> String {
 
 /// Runs one search and answers with the frontier, every point with the
 /// strategy that attains it.
+/// The components the page maximizes, `maximize=a,b` by name, applied to
+/// the tree after the time, so that the time can be named too.
+fn directions(tree: Tree, body: &str) -> Result<Tree, String> {
+    match field(body, "maximize").filter(|m| !m.trim().is_empty()) {
+        Some(m) => {
+            let names: Vec<String> = m.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+            tree.with_directions(&names)
+        }
+        None => Ok(tree),
+    }
+}
+
+/// The directions of the components as the page reads them, one flag per
+/// component, true where it is maximized.
+fn maximized_json(tree: &Tree) -> String {
+    let parts: Vec<String> = tree.maximized.iter().map(|m| m.to_string()).collect();
+    format!("[{}]", parts.join(", "))
+}
+
 /// The two bounds of the process at its initial state, the extremes of the
 /// window the page offers on the expected values, with the time as the
 /// page has it.
@@ -919,7 +938,10 @@ fn bounds_of(body: &str, bench: &Bench) -> String {
         Err(e) => return err(&format!("the instance does not read: {e}")),
     };
     let time = matches!(field(body, "time").as_deref(), Some("1") | Some("true"));
-    let tree = if time { tree.with_time() } else { tree };
+    let tree = match directions(if time { tree.with_time() } else { tree }, body) {
+        Ok(t) => t,
+        Err(e) => return err(&e),
+    };
     let s0 = crate::state::Engine::new(&tree).initial_state();
     let b = crate::bound::bounds::<Exact>(&tree, &s0);
     let names: Vec<String> = (0..tree.k)
@@ -928,22 +950,27 @@ fn bounds_of(body: &str, bench: &Bench) -> String {
             _ => esc(&format!("impact {c}")),
         })
         .collect();
-    let side = |v: &[Exact]| -> String {
-        let parts: Vec<String> = v.iter().map(|x| format!("{}", x.to_f64())).collect();
+    // the two bounds as they are shown, a maximized component reading the
+    // bounds of its negation the other way round
+    let rat = |v: &[Exact]| -> Vec<num_rational::BigRational> { v.iter().map(|x| x.0.clone()).collect() };
+    let (shown_u, shown_l) = tree.shown_bounds(&rat(&b.upper), &rat(&b.lower));
+    let side = |v: &[num_rational::BigRational]| -> String {
+        let parts: Vec<String> = v.iter().map(|x| format!("{}", pareto::approx(x))).collect();
         format!("[{}]", parts.join(", "))
     };
-    let exact = |v: &[Exact]| -> String {
-        let parts: Vec<String> = v.iter().map(|x| esc(&x.0.to_string())).collect();
+    let exact = |v: &[num_rational::BigRational]| -> String {
+        let parts: Vec<String> = v.iter().map(|x| esc(&x.to_string())).collect();
         format!("[{}]", parts.join(", "))
     };
     format!(
-        "{{\"time\": {}, \"names\": [{}], \"lower\": {}, \"upper\": {}, \"lower_exact\": {}, \"upper_exact\": {}}}",
+        "{{\"time\": {}, \"maximized\": {}, \"names\": [{}], \"lower\": {}, \"upper\": {}, \"lower_exact\": {}, \"upper_exact\": {}}}",
         time,
+        maximized_json(&tree),
         names.join(", "),
-        side(&b.lower),
-        side(&b.upper),
-        exact(&b.lower),
-        exact(&b.upper)
+        side(&shown_l),
+        side(&shown_u),
+        exact(&shown_l),
+        exact(&shown_u)
     )
 }
 
@@ -982,7 +1009,7 @@ fn prepare(body: &str, bench: &Bench) -> Result<Prepared, String> {
     // the expected time as the component zero of the frontier, when the
     // page asks for it: the same transform the flag --time makes
     let time = matches!(field(body, "time").as_deref(), Some("1") | Some("true"));
-    let tree = if time { tree.with_time() } else { tree };
+    let tree = directions(if time { tree.with_time() } else { tree }, body)?;
     // the window on the expected values, `lo,hi;lo,hi;...` in the order of
     // the components, either side empty for the bound at the initial state
     let window = field(body, "window").filter(|w| !w.trim().is_empty()).map(|w| {
@@ -994,6 +1021,20 @@ fn prepare(body: &str, bench: &Bench) -> Result<Prepared, String> {
                 (num::parse_decimal(&lo), num::parse_decimal(&hi))
             })
             .collect()
+    });
+    // a window on a maximized component is read on its negation: the two
+    // ends swap and change sign
+    let window = window.map(|w: Vec<(Option<num_rational::BigRational>, Option<num_rational::BigRational>)>| {
+        w.into_iter()
+            .enumerate()
+            .map(|(c, (lo, hi))| {
+                if tree.maximized.get(c).copied().unwrap_or(false) {
+                    (hi.map(|x| -x), lo.map(|x| -x))
+                } else {
+                    (lo, hi)
+                }
+            })
+            .collect::<Vec<_>>()
     });
 
     // the flags the form gives, read by the very code the command line uses,
@@ -1046,12 +1087,10 @@ fn options(
 /// point reached and the branch taken, each node with its identifier, its
 /// name and whether it is a task.
 fn point_json(tree: &Tree, labels: &[String], p: &pareto::Point) -> String {
-    let value: Vec<String> = p.value.iter().map(|v| esc(&v.to_string())).collect();
-    let approx: Vec<String> = p
-        .value
-        .iter()
-        .map(|v| format!("{:.6}", pareto::approx(v)))
-        .collect();
+    // the value as it is shown, the sign turned back on a maximized component
+    let shown = tree.shown_vec(&p.value);
+    let value: Vec<String> = shown.iter().map(|v| esc(&v.to_string())).collect();
+    let approx: Vec<String> = shown.iter().map(|v| format!("{:.6}", pareto::approx(v))).collect();
     let steps: Vec<String> = match &p.witness {
         None => Vec::new(),
         Some(w) => w
@@ -1113,16 +1152,21 @@ fn frontier_json(prep: &Prepared, report: &pareto::Report, seconds: f64) -> Stri
             .to_string()
     };
     format!(
-        "{{\"status\": {}, \"seconds\": {:.6}, \"time\": {}, \"window\": {}, \"outside\": {}, \"components\": [{}], \"names\": [{}], \"apexes\": {}, \
+        "{{\"status\": {}, \"seconds\": {:.6}, \"time\": {}, \"maximized\": {}, \"window\": {}, \"outside\": {}, \"components\": [{}], \"names\": [{}], \"apexes\": {}, \
          \"expanded\": {}, \"note\": {}, \"points\": [{}]}}",
         esc(status),
         seconds,
         prep.time,
+        maximized_json(tree),
         match &report.window {
             Some(w) => {
                 let parts: Vec<String> = w
                     .iter()
-                    .map(|(a, b)| format!("[{}, {}]", pareto::approx(a), pareto::approx(b)))
+                    .enumerate()
+                    .map(|(c, (a, b))| {
+                        let (a, b) = if tree.maximized.get(c).copied().unwrap_or(false) { (-b.clone(), -a.clone()) } else { (a.clone(), b.clone()) };
+                        format!("[{}, {}]", pareto::approx(&a), pareto::approx(&b))
+                    })
                     .collect();
                 format!("[{}]", parts.join(", "))
             }
@@ -1254,11 +1298,12 @@ fn snapshot(body: &str) -> String {
     let comps: Vec<String> = components.iter().map(|c| c.to_string()).collect();
     let points: Vec<String> = minimal.iter().map(|p| point_json(&prep.tree, &prep.labels, p)).collect();
     format!(
-        "{{\"live\": true, \"status\": \"building\", \"seconds\": {:.3}, \"time\": {}, \"window\": null, \"outside\": 0, \
+        "{{\"live\": true, \"status\": \"building\", \"seconds\": {:.3}, \"time\": {}, \"maximized\": {}, \"window\": null, \"outside\": 0, \
          \"components\": [{}], \"names\": [{}], \"apexes\": {}, \"reads\": {}, \"pruned\": {}, \"open_bounds\": {}, \
          \"note\": {}, \"points\": [{}]}}",
         session.started.elapsed().as_secs_f64(),
         prep.time,
+        maximized_json(&prep.tree),
         comps.join(", "),
         names_json(&prep.tree, &components),
         apexes.len(),
