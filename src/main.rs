@@ -1068,7 +1068,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
                     if s.trim().is_empty() {
                         Ok(None)
                     } else {
-                        num::parse_decimal(s.trim()).map(Some).ok_or_else(|| format!("{s:?} is not a decimal"))
+                        num::parse_rational(s.trim()).map(Some).ok_or_else(|| format!("{s:?} is not a decimal"))
                     }
                 };
                 match (side(lo), side(hi)) {

@@ -189,6 +189,22 @@ impl Exact {
 }
 
 /// Parses a decimal such as `0.317537`, `12`, `1e-06` or `-3.5E2` exactly.
+/// A number written as a decimal, or as a fraction `a/b` of two integers:
+/// the page sends the exact value of a point as a bound, so that the point
+/// stays within its own window, which six decimals cannot promise.
+pub fn parse_rational(text: &str) -> Option<BigRational> {
+    let text = text.trim();
+    if let Some((n, d)) = text.split_once('/') {
+        let n: num_bigint::BigInt = n.trim().parse().ok()?;
+        let d: num_bigint::BigInt = d.trim().parse().ok()?;
+        if d.sign() == num_bigint::Sign::NoSign {
+            return None;
+        }
+        return Some(BigRational::new(n, d));
+    }
+    parse_decimal(text)
+}
+
 pub fn parse_decimal(text: &str) -> Option<BigRational> {
     let text = text.trim();
     if text.is_empty() {

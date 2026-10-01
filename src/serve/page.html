@@ -919,7 +919,8 @@ const thumbHtml = (R, name) => ['lo', 'hi'].map(end =>
 function moveEnd(R, end, f) {
   f = Math.min(1, Math.max(0, f));
   const v = f <= 0 ? R.a : f >= 1 ? R.b : R.a + f * (R.b - R.a);
-  if (end === 'lo') R.lo = Math.min(v, R.hi); else R.hi = Math.max(v, R.lo);
+  // an end moved by hand loses the exact value a point may have given it
+  if (end === 'lo') { R.lo = Math.min(v, R.hi); R.loX = null; } else { R.hi = Math.max(v, R.lo); R.hiX = null; }
 }
 
 // the track painted from its range, the ends written beside the name
@@ -1084,8 +1085,8 @@ function buildWindow(b) {
     const a = +b.lower[i], bb = +b.upper[i], old = WINDOW[n];
     const R = { a, b: bb, lo: a, hi: bb, flat: !(bb > a) };
     if (old && !R.flat) {
-      if (old.lo > old.a) R.lo = Math.min(Math.max(old.lo, a), bb);
-      if (old.hi < old.b) R.hi = Math.max(Math.min(old.hi, bb), R.lo);
+      if (old.lo > old.a) { R.lo = Math.min(Math.max(old.lo, a), bb); R.loX = R.lo === old.lo ? old.loX : null; }
+      if (old.hi < old.b) { R.hi = Math.max(Math.min(old.hi, bb), R.lo); R.hiX = R.hi === old.hi ? old.hiX : null; }
     }
     next[n] = R;
   });
@@ -1110,7 +1111,7 @@ function buildWindow(b) {
 $('wreset').addEventListener('click', () => {
   WNAMES.forEach((n, i) => {
     const R = WINDOW[n]; if (!R) return;
-    R.lo = R.a; R.hi = R.b;
+    R.lo = R.a; R.hi = R.b; R.loX = null; R.hiX = null;
     paintTrack($('window').querySelector(`.rng[data-w="${i}"]`), R, $('wval' + i));
   });
 });
@@ -1120,7 +1121,8 @@ function windowField() {
   return WNAMES.map(n => {
     const R = WINDOW[n];
     if (!R || R.flat) return ',';
-    return (R.lo > R.a ? String(R.lo) : '') + ',' + (R.hi < R.b ? String(R.hi) : '');
+    // an end a point gave is sent exact, a fraction the server reads
+    return (R.lo > R.a ? (R.loX || String(R.lo)) : '') + ',' + (R.hi < R.b ? (R.hiX || String(R.hi)) : '');
   }).join(';');
 }
 $('time').addEventListener('change', refreshBounds);
@@ -1318,8 +1320,10 @@ function pointToWindow(p) {
     const v = Math.min(Math.max(+p.approx[j], R.a), R.b);
     // by the direction the next search takes, which is the one of the
     // dropdown now, not the one the result was computed with
-    if (DIRS[n] === 'max') { R.lo = v; if (R.hi < R.lo) R.hi = R.lo; }
-    else { R.hi = v; if (R.lo > R.hi) R.lo = R.hi; }
+    // the exact value goes with the end, so that the point is within its
+    // own window whatever its decimals round to
+    if (DIRS[n] === 'max') { R.lo = v; R.loX = p.value[j]; if (R.hi < R.lo) { R.hi = R.lo; R.hiX = null; } }
+    else { R.hi = v; R.hiX = p.value[j]; if (R.lo > R.hi) { R.lo = R.hi; R.loX = null; } }
     const i = WNAMES.indexOf(n);
     const track = $('window').querySelector(`.rng[data-w="${i}"]`);
     if (track) paintTrack(track, R, $('wval' + i));
@@ -1363,7 +1367,8 @@ function pcGroup(d, order, title) {
   const top = title ? 16 : 0;
   const step = 92, M = { l: 46, r: 46, t: 24 + top, b: 40 }, H = 280 + top;
   const W = M.l + step * Math.max(k - 1, 0) + M.r;
-  const cols = order.map(j => d.points.map(p => p.approx[j]));
+  const outs = d.outside_points || [];
+  const cols = order.map(j => d.points.concat(outs).map(p => p.approx[j]));
   const lo = cols.map(c => Math.min(...c)), hi = cols.map(c => Math.max(...c));
   const X = (j) => M.l + step * j;
   const Y = (j, v) => { const d = (hi[j] - lo[j]) || Math.abs(hi[j]) || 1;
@@ -1379,6 +1384,13 @@ function pcGroup(d, order, title) {
       + `<text x="${X(j)}" y="${H - M.b + 29}" font-size="10.5" fill="#6e6e6e" text-anchor="middle">${fmt(lo[j])}</text>`;
   }
   const tmFirst = d.time && order[0] === 0;
+  // the points found outside the bounds, grey and dashed, as context
+  const greys = outs.map(p => {
+    const P = order.map((oj, j) => `${X(j)},${Y(j, p.approx[oj])}`);
+    return k === 1
+      ? `<circle data-out="1" cx="${P[0].split(',')[0]}" cy="${P[0].split(',')[1]}" r="3" fill="#fff" stroke="#b8b6b0" stroke-width="1.2" stroke-dasharray="2 1.5"/>`
+      : `<polyline data-out="1" class="pc out" points="${P.join(' ')}"/>`;
+  }).join('');
   const lines = d.points.map((p, i) => {
     const P = order.map((oj, j) => `${X(j)},${Y(j, p.approx[oj])}`);
     const prov = p.certified === false ? ' data-prov="1"' : '';
@@ -1398,8 +1410,8 @@ function pcGroup(d, order, title) {
   }).join('');
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:100%;height:auto">
     <style>.pc{fill:none;stroke:#a9c7ec;stroke-width:1.3;pointer-events:none}.pc.sel{stroke:#d0342c;stroke-width:2.6}
-           .pc.tm{stroke:#f3c78a}.pc.sel.tm{stroke:#e07b00}</style>
-    ${axes}${lines}
+           .pc.tm{stroke:#f3c78a}.pc.sel.tm{stroke:#e07b00}.pc.out{stroke:#cfcdc7;stroke-dasharray:3 3}</style>
+    ${axes}${greys}${lines}
   </svg>`;
 }
 
@@ -1412,9 +1424,11 @@ function svg(d, ox, oy, byTime, title) {
   // frontier is these two components
   const stair = order.length === 2;
   const P = d.points.map(p => [p.approx[ox], p.approx[oy]]);
+  // the points found outside the bounds, drawn grey as context, never chosen
+  const O = (d.outside_points || []).map(p => [p.approx[ox], p.approx[oy]]);
   const top = title ? 14 : 0;
   const W = 460, H = 280 + top, M = { l: 52, r: 18, t: (byTime ? 26 : 14) + top, b: 38 };
-  const xs = P.map(p => p[0]), ys = P.map(p => p[1]);
+  const xs = P.concat(O).map(p => p[0]), ys = P.concat(O).map(p => p[1]);
   const pad = (a) => { const lo = Math.min(...a), hi = Math.max(...a);
                        const d = (hi - lo) || Math.abs(hi) || 1; return [lo - d * 0.12, hi + d * 0.12]; };
   const [x0, x1] = pad(xs), [y0, y1] = pad(ys);
@@ -1446,6 +1460,7 @@ function svg(d, ox, oy, byTime, title) {
     }
   }
   const fmt = (v) => String(+(+v).toFixed(3));
+  const greys = O.map(p => `<circle data-out="1" cx="${X(p[0])}" cy="${Y(p[1])}" r="3" fill="#fff" stroke="#b8b6b0" stroke-width="1.2" stroke-dasharray="2 1.5"><title>outside the bounds</title></circle>`).join('');
   const dots = sorted.map(([p, i]) => {
     const prov = d.points[i].certified === false;
     const own = byTime ? colour(times[i]) : '#2a78d6';
@@ -1466,7 +1481,7 @@ function svg(d, ox, oy, byTime, title) {
     ${g}${legend}
     ${stair ? `<path data-stair="1" d="${path}" fill="none" stroke="#2a78d6" stroke-width="1.2"
           stroke-dasharray="3 2" opacity="0.6"/>` : ''}
-    ${dots}
+    ${greys}${dots}
     <line x1="${M.l}" y1="${H - M.b}" x2="${W - M.r}" y2="${H - M.b}" stroke="#52514e"/>
     <line x1="${M.l}" y1="${M.t}" x2="${M.l}" y2="${H - M.b}" stroke="#52514e"/>
     <text x="${(M.l + W - M.r) / 2}" y="${H - 6}" font-size="11" fill="#0b0b0b"

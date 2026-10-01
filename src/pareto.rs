@@ -786,6 +786,10 @@ pub struct Report {
     /// found fell outside it and were left out.
     pub window: Option<Vec<(BigRational, BigRational)>>,
     pub outside: usize,
+    /// The points found outside the window, set apart: never a point of
+    /// the frontier, but a record of what the search found feasible, which
+    /// a page may draw as context.
+    pub outside_points: Vec<Point>,
 }
 
 /// The window of the options with its open sides filled by the two bounds
@@ -807,18 +811,12 @@ fn window_filled(
 }
 
 /// The points within the window, and how many were not.
-fn within_window(points: Vec<Point>, window: Option<&[(Exact, Exact)]>) -> (Vec<Point>, usize) {
+fn within_window(points: Vec<Point>, window: Option<&[(Exact, Exact)]>) -> (Vec<Point>, Vec<Point>) {
     match window {
-        None => (points, 0),
-        Some(w) => {
-            let before = points.len();
-            let kept: Vec<Point> = points
-                .into_iter()
-                .filter(|p| (0..w.len()).all(|c| w[c].0 .0 <= p.value[c] && p.value[c] <= w[c].1 .0))
-                .collect();
-            let outside = before - kept.len();
-            (kept, outside)
-        }
+        None => (points, Vec::new()),
+        Some(w) => points
+            .into_iter()
+            .partition(|p| (0..w.len()).all(|c| w[c].0 .0 <= p.value[c] && p.value[c] <= w[c].1 .0)),
     }
 }
 
@@ -1262,12 +1260,12 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                 .any(|v| components.iter().all(|&c| v[c].0 <= p.value[c]));
         }
     }
-    let certified_points = minimal.iter().filter(|p| p.certified).count();
     if let Some(sink) = &opts.anytime {
         sink.minimal(minimal.len());
     }
     let elapsed = started.elapsed();
-    let (minimal, outside) = within_window(minimal, window.as_deref());
+    let (minimal, dropped) = within_window(minimal, window.as_deref());
+    let certified_points = minimal.iter().filter(|p| p.certified).count();
     Ok(Report {
         library: o.name(),
         onephase: true,
@@ -1304,7 +1302,8 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         status,
         points: minimal,
         window: window.map(|w| w.into_iter().map(|(a, b)| (a.0, b.0)).collect()),
-        outside,
+        outside: dropped.len(),
+        outside_points: dropped,
     })
 }
 
@@ -1671,9 +1670,8 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
             p.certified = !o.is_sat(&o.and(&unknown, &below));
         }
     }
+    let (minimal, dropped) = within_window(minimal, window.as_deref());
     let certified_points = minimal.iter().filter(|p| p.certified).count();
-
-    let (minimal, outside) = within_window(minimal, window.as_deref());
     Ok(Report {
         library: o.name(),
         onephase: false,
@@ -1710,7 +1708,8 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         status,
         points: minimal,
         window: window.map(|w| w.into_iter().map(|(a, b)| (a.0, b.0)).collect()),
-        outside,
+        outside: dropped.len(),
+        outside_points: dropped,
     })
 }
 

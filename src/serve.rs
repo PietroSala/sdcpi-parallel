@@ -920,6 +920,19 @@ fn directions(tree: Tree, body: &str) -> Result<Tree, String> {
     }
 }
 
+/// The points found outside the window, as the page draws them for
+/// context: their values alone, shown, with no strategy.
+fn outside_json(tree: &Tree, points: &[pareto::Point]) -> String {
+    let items: Vec<String> = points
+        .iter()
+        .map(|p| {
+            let approx: Vec<String> = tree.shown_vec(&p.value).iter().map(|v| format!("{:.6}", pareto::approx(v))).collect();
+            format!("{{\"approx\": [{}]}}", approx.join(", "))
+        })
+        .collect();
+    format!("[{}]", items.join(", "))
+}
+
 /// The directions of the components as the page reads them, one flag per
 /// component, true where it is maximized.
 fn maximized_json(tree: &Tree) -> String {
@@ -1025,7 +1038,7 @@ fn prepare(body: &str, bench: &Bench) -> Result<Prepared, String> {
                 let mut it = part.splitn(2, ',');
                 let lo = it.next().unwrap_or("").trim().to_string();
                 let hi = it.next().unwrap_or("").trim().to_string();
-                (num::parse_decimal(&lo), num::parse_decimal(&hi))
+                (num::parse_rational(&lo), num::parse_rational(&hi))
             })
             .collect()
     });
@@ -1146,7 +1159,18 @@ fn frontier_json(prep: &Prepared, report: &pareto::Report, seconds: f64) -> Stri
     };
     let comps: Vec<String> = report.components.iter().map(|c| c.to_string()).collect();
     let points: Vec<String> = report.points.iter().map(|p| point_json(tree, &prep.labels, p)).collect();
-    let note = if matches!(report.status, pareto::Status::Timeout) {
+    let cut = matches!(report.status, pareto::Status::Timeout);
+    let mut note = if report.points.is_empty() && report.outside > 0 {
+        if cut {
+            "The search was cut before a point landed within the bounds; what it found feasible lies \
+             outside them and is drawn grey. A longer run may find points within."
+                .to_string()
+        } else {
+            "No strategy keeps its expected values within the bounds: the frontier is empty there, \
+             and the points found outside are drawn grey."
+                .to_string()
+        }
+    } else if cut {
         format!(
             "The search was cut. {} of the {} points are final, no open branch \
              being able to beat them; the others are provisional, a longer run may replace them, \
@@ -1158,9 +1182,17 @@ fn frontier_json(prep: &Prepared, report: &pareto::Report, seconds: f64) -> Stri
         "The search finished, so every point is an optimum and the set is the whole frontier."
             .to_string()
     };
+    if !report.points.is_empty() && report.outside > 0 {
+        note.push_str(&format!(
+            " {} {} found outside the bounds {} drawn grey, as context.",
+            report.outside,
+            if report.outside == 1 { "point" } else { "points" },
+            if report.outside == 1 { "is" } else { "are" }
+        ));
+    }
     format!(
         "{{\"status\": {}, \"seconds\": {:.6}, \"time\": {}, \"maximized\": {}, \"window\": {}, \"outside\": {}, \"components\": [{}], \"names\": [{}], \"apexes\": {}, \
-         \"expanded\": {}, \"note\": {}, \"points\": [{}]}}",
+         \"expanded\": {}, \"note\": {}, \"outside_points\": {}, \"points\": [{}]}}",
         esc(status),
         seconds,
         prep.time,
@@ -1185,6 +1217,7 @@ fn frontier_json(prep: &Prepared, report: &pareto::Report, seconds: f64) -> Stri
         report.accepts,
         report.search.expanded,
         esc(&note),
+        outside_json(tree, &report.outside_points),
         points.join(", ")
     )
 }
@@ -1341,17 +1374,31 @@ fn snapshot(body: &str) -> String {
             Some(open) => !open.iter().any(|v| components.iter().all(|&c| v[c] <= p.value[c])),
         };
     }
+    // the window as the search reads it: a point outside is set apart,
+    // drawn as context and never a point of the frontier, as in the answer
+    let (minimal, dropped): (Vec<pareto::Point>, Vec<pareto::Point>) = match &prep.window {
+        None => (minimal, Vec::new()),
+        Some(w) => minimal.into_iter().partition(|p| {
+            (0..p.value.len()).all(|c| match w.get(c) {
+                Some((lo, hi)) => {
+                    lo.as_ref().map_or(true, |l| *l <= p.value[c]) && hi.as_ref().map_or(true, |h| p.value[c] <= *h)
+                }
+                None => true,
+            })
+        }),
+    };
     let open_bounds = open.as_ref().map(|o| o.len()).unwrap_or(0);
     let final_points = minimal.iter().filter(|p| p.certified).count();
     let comps: Vec<String> = components.iter().map(|c| c.to_string()).collect();
     let points: Vec<String> = minimal.iter().map(|p| point_json(&prep.tree, &prep.labels, p)).collect();
     format!(
-        "{{\"live\": true, \"status\": \"building\", \"seconds\": {:.3}, \"time\": {}, \"maximized\": {}, \"window\": null, \"outside\": 0, \
+        "{{\"live\": true, \"status\": \"building\", \"seconds\": {:.3}, \"time\": {}, \"maximized\": {}, \"window\": null, \"outside\": {}, \
          \"components\": [{}], \"names\": [{}], \"apexes\": {}, \"reads\": {}, \"pruned\": {}, \"open_bounds\": {}, \
-         \"note\": {}, \"points\": [{}]}}",
+         \"note\": {}, \"outside_points\": {}, \"points\": [{}]}}",
         session.started.elapsed().as_secs_f64(),
         prep.time,
         maximized_json(&prep.tree),
+        dropped.len(),
         comps.join(", "),
         names_json(&prep.tree, &components),
         apexes.len(),
@@ -1361,6 +1408,7 @@ fn snapshot(body: &str) -> String {
         esc(&format!(
             "The search is running: the points are the minimal apexes recorded so far, {final_points} of them final already, no open node being able to beat them, the others provisional. Pause to explore the snapshot, stop to cut the search with its certificate."
         )),
+        outside_json(&prep.tree, &dropped),
         points.join(", ")
     )
 }
