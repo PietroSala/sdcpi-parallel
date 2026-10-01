@@ -177,7 +177,10 @@
   .livebar { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; }
   .livebar button { width: auto; margin: 0; padding: 5px 12px; }
   .livebar .status { margin: 0; }
-  #out.live .plotrow, #out.live .tablebox, #out.live .strategy, #out.live .switch { pointer-events: none; opacity: .8; }
+  /* while it builds only the plot and the cards show; the table, the
+     ranges, the strategy and the switch come back on pause */
+  #out.live .ranges, #out.live .tablebox, #out.live .strategy, #out.live .switch, #out.live .foot { display: none; }
+  #out.live .plotrow { pointer-events: none; }
 </style>
 
 <header>
