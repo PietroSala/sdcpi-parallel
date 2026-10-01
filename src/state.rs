@@ -184,7 +184,7 @@ impl<'t> Engine<'t> {
     /// The down clause: `tau` starts the low child of a sequence and both
     /// children of a parallel node.
     #[inline]
-    fn down(&self, s: &mut [i8], v: u32) {
+    pub(crate) fn down(&self, s: &mut [i8], v: u32) {
         let n = self.tree.node(v);
         s[n.low as usize] = 0;
         if n.kind == Kind::Parallel {
@@ -195,7 +195,7 @@ impl<'t> Engine<'t> {
     /// The up clause: the hand-over of a sequence, or the closing of a node
     /// above the branches that are done.
     #[inline]
-    fn up(&self, s: &mut [i8], v: u32) {
+    pub(crate) fn up(&self, s: &mut [i8], v: u32) {
         let n = self.tree.node(v);
         if n.kind == Kind::Sequence
             && s[n.low as usize] == DONE
@@ -214,7 +214,7 @@ impl<'t> Engine<'t> {
     /// a completion over the running tasks, every task at that time completes in
     /// this one step, and the cost is the sum of their impacts.
     #[inline]
-    fn fast_forward<N: Num>(&self, s: &mut [i8], impact: &mut [N]) {
+    pub(crate) fn fast_forward<N: Num>(&self, s: &mut [i8], impact: &mut [N]) {
         let tree = self.tree;
         let mut t = i32::MAX;
         for &u in &tree.tasks {

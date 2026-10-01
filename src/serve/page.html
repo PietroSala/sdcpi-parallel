@@ -164,13 +164,42 @@
   .subrow code { color: var(--muted); }
   .subrow .muted { color: var(--muted); }
   #diagram svg .toggle { cursor: pointer; }
+  #simulator { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+               padding: 14px; margin: 12px 0 20px; }
+  #simulator h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  #simulator h3 { margin: 12px 0 6px; font-size: 12px; color: var(--muted); }
+  #simulator p { margin: 5px 0; }
+  .simcontrols { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  .simcontrols label { margin: 0 0 4px; }
+  .simcontrols input { width: 195px; font-variant-numeric: tabular-nums; }
+  #simulator button { width: auto; margin: 0; padding: 7px 12px; }
+  #simulator button:disabled { opacity: .65; }
+  .simmetrics { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: 10px 0; }
+  .simmetrics > div { min-width: 100px; max-width: 100%; }
+  .simmetrics span { display: block; color: var(--muted); font-size: 11.5px; }
+  #simulator code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
+  #simchoice { border-left: 3px solid var(--warm); padding: 7px 12px; margin: 12px 0; background: #fff8ef; }
+  #simchoice .simcontrols { margin: 8px 0 2px; }
+  #simhistory { margin-top: 10px; }
+  #simhistory td { vertical-align: top; }
+  #simhistory tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #simsnapshot { margin-top: 12px; }
+  #simtasks tbody tr { cursor: default; }
+  #simtasks td:nth-child(2) { text-align: left; }
+  .simlegend { display: flex; flex-wrap: wrap; gap: 14px; color: var(--muted); font-size: 11.5px; }
+  .simlegend span::before { content: ''; display: inline-block; width: 8px; height: 8px;
+                            border-radius: 50%; margin-right: 5px; background: var(--accent); }
+  .simlegend .completed::before { background: var(--good); }
+  #diagram .task.sim-running > rect:not(.bar) { fill: #eaf2fd; stroke: #2a78d6; stroke-width: 3; }
+  #diagram .task.sim-completed > rect:not(.bar) { fill: #e9f8f1; stroke: #1baf7a; stroke-width: 3; }
+  #diagram .task.sim-finished > rect:not(.bar) { stroke: #1baf7a; stroke-width: 2; }
   .foot { color: var(--muted); font-size: 11.5px; margin-top: 16px; }
 </style>
 
 <header>
   <h1>sdcpi</h1>
-  <p>The Pareto frontier of the expected impacts of a BPMN+CPI process, every point with a
-     strategy that attains it. Exact rational arithmetic, no tolerance anywhere.</p>
+  <p>Simulate a BPMN+CPI process one fast forward at a time, or compute its Pareto frontier
+     of expected impacts with a strategy for every point. Exact rational arithmetic.</p>
 </header>
 
 <main>
@@ -275,6 +304,26 @@
 <section>
   <div id="diagram"><p class="status">The diagram of the process is drawn here as you type.</p></div>
   <div id="dnote"></div>
+  <div id="simulator" aria-labelledby="simtitle">
+    <h2 id="simtitle">Simulator</h2>
+    <p class="hint">Explore one trace, advancing directly to task completions. Only fast-forward states appear in the history.</p>
+    <div class="simcontrols">
+      <div><label for="simseed">Random seed</label><input id="simseed" type="text" inputmode="numeric" value="1" autocomplete="off" spellcheck="false"></div>
+      <button type="button" id="simstart">Start</button>
+      <button type="button" id="simnext" class="ghost" disabled>Next fast forward</button>
+      <button type="button" id="simrun" class="ghost" disabled>Run to end</button>
+    </div>
+    <p id="simstatus" class="status" role="status" aria-live="polite">Start a simulation of the current process.</p>
+    <div id="simerror" class="err" role="alert" hidden></div>
+    <div id="simresults" hidden>
+      <div id="simsummary"></div>
+      <p class="hint">Probability is the product of the sampled nature outcomes, conditional on your manual decisions.
+        The impact vector contains the realized, accumulated impacts of this trace, in the component order shown below.</p>
+      <div id="simchoice" hidden></div>
+      <div id="simhistory" class="tablebox" hidden></div>
+      <div id="simsnapshot"></div>
+    </div>
+  </div>
   <div id="out"><p class="status">Paste a process and press the button.</p></div>
 </section>
 </main>
@@ -282,6 +331,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let LAST = null;
+const SIM = { data: null, selected: null, target: 0, busy: false, revision: 0, controller: null };
 
 function fill(id, from, to, chosen) {
   const s = $(id);
@@ -295,7 +345,7 @@ fill('b-n', 1, 10, 2); fill('b-i', 1, 10, 3); fill('b-k', 1, 10, 2); fill('b-d',
 
 fetch('/api/hello').then(r => r.json()).then(h => {
   $('grammar').textContent = h.grammar || '';
-  if (h.example) $('proc').value = h.example;
+  if (h.example) { $('proc').value = h.example; resetSimulation(); }
   refreshState();
   if (h.bench) {
     (h.modes || []).forEach(m => {
@@ -341,7 +391,9 @@ $('load').addEventListener('click', async () => {
 const DOC = { name: null, loaded: null, baseline: null };
 
 function setName(name) {
+  const before = DOC.name;
   DOC.name = name && name.trim() ? name.trim() : null;
+  if (before !== DOC.name) resetSimulation();
   $('pname').textContent = DOC.name || 'untitled';
   $('pname').classList.toggle('untitled', !DOC.name);
   refreshState();
@@ -416,6 +468,7 @@ async function saveProcess(overwrite) {
     $('savenote').textContent = `Saved as ${d.name}.`;
     refreshState();
     refreshSaved();
+    resetSimulation();
     refreshDiagram();   // the store changed: a reference to this name reads the new text
   } catch (e) { $('savenote').textContent = String(e); }
 }
@@ -488,6 +541,7 @@ async function deleteSaved(name) {
     else {
       $('savenote').textContent = `Deleted ${d.name}.`;
       if (DOC.loaded === d.name) { DOC.loaded = null; DOC.baseline = null; refreshState(); }
+      resetSimulation();
       refreshDiagram();   // a reference to the deleted name now fails, and says so
     }
   } catch (e) { $('savenote').textContent = String(e); }
@@ -512,9 +566,10 @@ refreshSaved();
 // The diagram follows the text: a quarter of a second after the last
 // keystroke the process is sent and drawn again; while it does not parse the
 // last drawing stays, dimmed, with the reason under it.
-let diagramTimer = null;
+let diagramTimer = null, diagramRevision = 0;
 function refreshDiagram() {
   clearTimeout(diagramTimer);
+  const revision = ++diagramRevision;
   diagramTimer = setTimeout(async () => {
     if ($('proc').value.trim() === '') {
       // nothing to draw: the drawing, the chips and the sub-processes go
@@ -541,6 +596,7 @@ function refreshDiagram() {
     try {
       const r = await fetch('/api/svg', { method: 'POST', body });
       const d = await r.json();
+      if (revision !== diagramRevision) return;
       if (d.svg) {
         chips(d.impacts || []);
         subsPanel(d.subs || []);
@@ -551,6 +607,7 @@ function refreshDiagram() {
           + '<div class="zoom"><button type="button" title="zoom in">+</button>'
           + '<button type="button" title="zoom out">−</button>'
           + '<button type="button" class="fit" title="fit the whole drawing">fit</button></div>';
+        $('diagram').dataset.source = JSON.stringify([body.get('process'), body.get('name')]);
         const view = viewport($('diagram').querySelector('svg'), toggleSub, keep);
         VIEW = view;
         const [zin, zout, fit] = $('diagram').querySelectorAll('.zoom button');
@@ -559,6 +616,7 @@ function refreshDiagram() {
         fit.addEventListener('click', view.fit);
         $('diagram').classList.remove('stale');
         $('dnote').textContent = '';
+        highlightSimulation();
       } else {
         $('diagram').classList.add('stale');
         $('dnote').textContent = d.error || '';
@@ -605,11 +663,13 @@ $('subclose').addEventListener('click', () => { EXPANDED.clear(); refreshDiagram
 // A frontier belongs to the text it was computed from: when the text changes,
 // by a keystroke or a load, the results of the text before leave the page.
 function invalidate() {
+  resetSimulation();
   if (LAST === null) return;
   LAST = null; SELECTED = null;
   $('out').innerHTML = '<p class="status">The process changed; press the button to compute its frontier.</p>';
 }
 $('proc').addEventListener('input', () => { invalidate(); refreshDiagram(); refreshState(); });
+$('time').addEventListener('change', invalidate);
 
 // Zoom and pan on a drawing: the wheel zooms about the pointer, a drag pans,
 // the buttons zoom about the centre and fit the whole drawing again. The
@@ -1001,6 +1061,177 @@ function select(i, reveal = true) {
   }).join('');
   $('str').innerHTML = `<h3>Strategy of point ${i + 1}</h3>`
     + `<div style="margin-bottom:7px">expected: ${values}</div>` + lines;
+}
+
+// A simulation replays the same seed and manual actions from the beginning.
+// Only snapshots directly after fast forward enter the visible history.
+const SIM_LIMIT = 4096;
+function simulationSource() {
+  return JSON.stringify([$('proc').value, DOC.name || '', $('time').checked, $('simseed').value.trim()]);
+}
+function resetSimulation() {
+  SIM.revision++;
+  if (SIM.controller) SIM.controller.abort();
+  SIM.controller = null;
+  SIM.data = null; SIM.selected = null; SIM.target = 0; SIM.busy = false;
+  $('simresults').hidden = true;
+  $('simerror').hidden = true;
+  $('simstatus').textContent = 'Start a simulation of the current process.';
+  simulationControls();
+  highlightSimulation();
+}
+function simulationControls() {
+  const d = SIM.data;
+  $('simstart').textContent = d ? 'Restart' : 'Start';
+  $('simstart').disabled = SIM.busy;
+  const advance = !SIM.busy && d && d.status === 'ready' && d.steps.length < SIM_LIMIT;
+  $('simnext').disabled = !advance;
+  $('simrun').disabled = !advance;
+  $('simchoice').querySelectorAll('button').forEach(b => { b.disabled = SIM.busy; });
+}
+async function simulate(target, actions) {
+  const seed = $('simseed').value.trim();
+  if (!/^\d+$/.test(seed) || BigInt(seed) > 18446744073709551615n) {
+    $('simerror').textContent = 'Use a whole-number seed from 0 to 18446744073709551615.';
+    $('simerror').hidden = false;
+    return;
+  }
+  const source = simulationSource(), revision = ++SIM.revision;
+  if (SIM.controller) SIM.controller.abort();
+  const controller = new AbortController();
+  SIM.controller = controller; SIM.busy = true;
+  $('simerror').hidden = true;
+  $('simstatus').textContent = 'Simulating...';
+  simulationControls();
+  const body = new URLSearchParams({ process: $('proc').value, name: DOC.name || '',
+    time: $('time').checked ? '1' : '0', seed, actions: actions.join(','), steps: String(target) });
+  try {
+    const r = await fetch('/api/simulate', { method: 'POST', body, signal: controller.signal });
+    const d = await r.json();
+    if (revision !== SIM.revision || source !== simulationSource()) return;
+    if (!r.ok || d.error) throw new Error(d.error || `Simulation failed (${r.status}).`);
+    SIM.data = d; SIM.target = target;
+    SIM.selected = d.steps.length ? d.steps.length - 1 : null;
+    $('simseed').value = d.seed;
+    renderSimulation();
+  } catch (e) {
+    if (revision !== SIM.revision || e.name === 'AbortError') return;
+    $('simerror').textContent = e.message || String(e);
+    $('simerror').hidden = false;
+    $('simstatus').textContent = SIM.data ? 'Could not advance the trace. Try again or restart.' : 'Could not start the simulation.';
+  } finally {
+    if (revision === SIM.revision) {
+      SIM.busy = false; SIM.controller = null;
+      simulationControls();
+    }
+  }
+}
+$('simseed').addEventListener('input', resetSimulation);
+$('simstart').addEventListener('click', () => simulate(0, []));
+$('simnext').addEventListener('click', () => {
+  if (SIM.data) simulate(SIM.data.steps.length + 1, SIM.data.actions);
+});
+$('simrun').addEventListener('click', () => {
+  if (SIM.data) simulate(SIM_LIMIT, SIM.data.actions);
+});
+function simNode(n) {
+  return n ? `${h(n.name || n.label || n.id)} <code>(${h(n.label || n.id)})</code>` : '';
+}
+function simVector(values) { return `<code>[${values.map(h).join(', ')}]</code>`; }
+function simProbability(exact, approx) {
+  const percentage = Number.isFinite(approx) ? ` <small>(approximately ${h(Number((approx * 100).toPrecision(6)))}%)</small>` : '';
+  return `<code>${h(exact)}</code>` + (String(exact).includes('/') ? percentage : '');
+}
+function simMetrics(d, elapsed) {
+  return `<div class="simmetrics"><div><span>Probability of occurrence</span>${simProbability(d.probability, d.probability_approx)}</div>`
+    + `<div><span>Accumulated impact vector</span>${simVector(d.impact)}</div>`
+    + `<div><span>Elapsed time</span><code>${h(elapsed)}</code></div></div>`;
+}
+function renderSimulation() {
+  const d = SIM.data;
+  $('simresults').hidden = false;
+  $('simstatus').textContent = d.status === 'complete' ? 'Trace complete.'
+    : d.status === 'choice' ? 'Choose a branch to continue.'
+    : d.steps.length >= SIM_LIMIT ? 'Trace limit reached: 4096 fast forwards.'
+    : d.steps.length ? 'Ready for the next fast forward.' : 'Ready for the first fast forward.';
+  $('simsummary').innerHTML = `<h3>${d.status === 'complete' ? 'Complete trace' : 'Trace so far'}</h3>`
+    + simMetrics(d, d.elapsed)
+    + `<p class="hint">Component order: ${simVector(d.names)}. ${d.steps.length} fast-forward states.</p>`;
+  const choice = $('simchoice');
+  choice.hidden = d.status !== 'choice' || !d.choice;
+  choice.innerHTML = '';
+  if (!choice.hidden) {
+    choice.innerHTML = `<p>Manual decision at <code>${h(d.choice.label || d.choice.id)}</code></p>`
+      + '<div class="simcontrols">' + [d.choice.low, d.choice.high].map(n =>
+        `<button type="button" data-action="${h(n.id)}">Take ${simNode(n)}</button>`).join('') + '</div>';
+    choice.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+      simulate(SIM.target, [...d.actions, Number(b.dataset.action)]);
+    }));
+  }
+  const nodes = new Map(d.nodes.map(n => [n.id, n]));
+  const history = $('simhistory');
+  history.hidden = !d.steps.length;
+  history.innerHTML = d.steps.length ? '<table><thead><tr><th>Fast forward</th><th>Time</th><th>Advance</th>'
+    + '<th>Completed</th><th>Probability</th><th>Impact vector</th></tr></thead><tbody>'
+    + d.steps.map((s, i) => `<tr data-step="${i}" tabindex="0" role="button" aria-label="Inspect fast forward ${h(s.index)} at time ${h(s.time)}">`
+      + `<td>${h(s.index)}</td><td>${h(s.time)}</td><td>+${h(s.delta)}</td>`
+      + `<td>${s.completed.map(id => simNode(nodes.get(id))).join(', ')}</td>`
+      + `<td><code>${h(s.probability)}</code></td><td>${simVector(s.impact)}</td></tr>`).join('')
+    + '</tbody></table>' : '';
+  history.querySelectorAll('tr[data-step]').forEach(row => {
+    row.addEventListener('click', () => selectSimulation(Number(row.dataset.step)));
+    row.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectSimulation(Number(row.dataset.step)); }
+    });
+  });
+  selectSimulation(SIM.selected);
+}
+function simulationCompleted() {
+  return new Set(SIM.data && SIM.selected !== null
+    ? SIM.data.steps.slice(0, SIM.selected + 1).flatMap(s => s.completed) : []);
+}
+function selectSimulation(index) {
+  SIM.selected = index;
+  const d = SIM.data, s = index === null ? null : d.steps[index];
+  $('simhistory').querySelectorAll('tr[data-step]').forEach(row => {
+    const on = Number(row.dataset.step) === index;
+    row.classList.toggle('sel', on);
+    row.setAttribute('aria-pressed', String(on));
+    if (on) revealRow(row);
+  });
+  if (!s) {
+    $('simsnapshot').innerHTML = '<p class="status">No fast-forward state yet.</p>';
+    highlightSimulation();
+    return;
+  }
+  const completed = simulationCompleted();
+  const rows = d.nodes.filter(n => n.task).map(n => {
+    const progress = s.state[n.id];
+    const done = completed.has(n.id);
+    const status = s.completed.includes(n.id) ? 'Completed in this step'
+      : done ? 'Completed earlier' : progress >= 0 ? 'Running' : 'Not run';
+    const value = done ? n.duration : Math.max(0, progress);
+    return `<tr><td>${simNode(n)}</td><td>${status}</td><td>${h(value)} / ${h(n.duration)}</td></tr>`;
+  }).join('');
+  $('simsnapshot').innerHTML = `<h3>Fast-forward state ${h(s.index)}, at time ${h(s.time)}</h3>`
+    + simMetrics(s, s.time)
+    + '<p class="hint">Snapshot values stop at this fast forward. The trace above also includes any nature outcomes sampled since this state.</p>'
+    + '<div class="simlegend"><span>Still running</span><span class="completed">Completed in this step</span></div>'
+    + '<div class="tablebox" id="simtasks"><table><thead><tr><th>Task</th><th>Status</th><th>Progress / duration</th></tr></thead>'
+    + `<tbody>${rows}</tbody></table></div>`;
+  highlightSimulation();
+}
+function highlightSimulation() {
+  const d = SIM.data;
+  const sameProcess = $('diagram').dataset.source === JSON.stringify([$('proc').value, DOC.name || '']);
+  const s = sameProcess && d && SIM.selected !== null ? d.steps[SIM.selected] : null;
+  const completed = simulationCompleted();
+  $('diagram').querySelectorAll('.task[data-id]').forEach(task => {
+    const id = Number(task.dataset.id);
+    task.classList.toggle('sim-running', !!s && s.state[id] >= 0);
+    task.classList.toggle('sim-completed', !!s && s.completed.includes(id));
+    task.classList.toggle('sim-finished', !!s && completed.has(id) && !s.completed.includes(id));
+  });
 }
 
 // Parallel coordinates: one vertical axis per impact, scaled from the least

@@ -48,6 +48,8 @@ use crate::{parse, parse_args, SearchOptions};
 
 const PAGE: &str = include_str!("serve/page.html");
 
+mod simulator;
+
 /// The largest request body accepted, and the largest time limit the page may
 /// ask for. A process is text and a generous one is a few kilobytes.
 const MAX_BODY: usize = 256 * 1024;
@@ -447,6 +449,10 @@ fn serve_one(mut stream: TcpStream, bench: &Bench) {
         }
         ("POST", "/api/frontier") => {
             let out = frontier(&body, bench);
+            send(&mut stream, 200, "application/json", &out)
+        }
+        ("POST", "/api/simulate") => {
+            let out = simulator::simulate(&body, bench);
             send(&mut stream, 200, "application/json", &out)
         }
         ("POST", "/api/svg") => {
