@@ -1247,6 +1247,33 @@ fn start(body: &str, bench: &Bench) -> String {
         done: Mutex::new(None),
     });
     let id = NEXT_SESSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // one line per search on the standard error, the log of the server:
+    // what was asked, so that a run can be read back afterwards
+    {
+        let p = &session.prep;
+        let window = match &p.window {
+            Some(w) => {
+                let parts: Vec<String> = w
+                    .iter()
+                    .map(|(a, b)| {
+                        let f = |x: &Option<num_rational::BigRational>| x.as_ref().map(|r| format!("{}", pareto::approx(r))).unwrap_or_default();
+                        format!("{}..{}", f(a), f(b))
+                    })
+                    .collect();
+                parts.join(",")
+            }
+            None => "none".to_string(),
+        };
+        eprintln!(
+            "search {id}: {} time={} maximized=[{}] window={window} workers={} limit={}s{}",
+            field(body, "name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "(unnamed)".to_string()),
+            p.time,
+            p.tree.maximized_names().join(","),
+            p.workers,
+            p.limit,
+            ""
+        );
+    }
     {
         let mut sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
         sessions.push((id, session.clone()));
@@ -1263,8 +1290,22 @@ fn start(body: &str, bench: &Bench) -> String {
             &worker.prep.tree,
             options(&worker.prep, Some(worker.live.clone()), Some(worker.cancel.clone())),
         ) {
-            Ok(report) => frontier_json(&worker.prep, &report, started.elapsed().as_secs_f64()),
-            Err(e) => err(&e),
+            Ok(report) => {
+                eprintln!(
+                    "search {id}: {:?} after {:.2}s, {} points, {} final, {} apexes, {} outside the window",
+                    report.status,
+                    started.elapsed().as_secs_f64(),
+                    report.points.len(),
+                    report.certified_points,
+                    report.accepts,
+                    report.outside
+                );
+                frontier_json(&worker.prep, &report, started.elapsed().as_secs_f64())
+            }
+            Err(e) => {
+                eprintln!("search {id}: failed: {e}");
+                err(&e)
+            }
         };
         *worker.done.lock().unwrap_or_else(|e| e.into_inner()) = Some(json);
     });
@@ -1328,6 +1369,7 @@ fn stop(body: &str) -> String {
     match session_of(body) {
         Ok(s) => {
             s.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("search {}: stop asked by the page", field(body, "id").unwrap_or_default());
             "{\"ok\": true}".to_string()
         }
         Err(e) => err(&e),
