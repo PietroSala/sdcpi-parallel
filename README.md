@@ -40,6 +40,24 @@ is nothing to install beyond what is already there, it runs on the three
 desktop systems and inside a container alike, and it binds `127.0.0.1` and
 never every address, because it runs a computation for whoever asks.
 
+The **Simulator** panel runs the process independently of the frontier.
+Press **Start**, then advance to the next fast forward or run until the
+process completes or needs a manual choice. Nature branches are sampled
+according to their probabilities; the same seed and manual choices replay
+the same trace. Restart to try another trace or another choice.
+
+The trace lists only fast-forward transitions, with elapsed time, completed
+tasks and the progress of tasks still running. Select a row to inspect that
+snapshot. The current trace and each snapshot show the exact probability
+and the accumulated impact vector, with named components. This probability
+is the product of the sampled nature probabilities, conditional on the
+manual choices; controller choices do not introduce a probability factor.
+The vector records the costs actually incurred by this trace. With
+**Expected time** enabled, its first component is the elapsed simulation
+time. The current trace probability includes nature branches already
+resolved in preparation for the next fast forward; a selected snapshot
+shows the probability up to that fast forward only.
+
 
 ## The model
 
