@@ -47,7 +47,7 @@ from light for the shortest to dark for the longest; one impact with the
 time in its group in the plane of the two; three or more impacts as
 parallel coordinates; one alone as a single axis of dots. The staircase
 is drawn only when the whole frontier is two components.
-The block "Directions" of the form sets, per component, whether the frontier
+The block "Directions" of the form sets, with a two-way switch per component, whether the frontier
 takes the least or the greatest expected value, the time included; every
 label of the page carries the arrow of its direction, the bounds on the
 expected values and the ranges beside the plot among them, and with both
