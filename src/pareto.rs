@@ -687,6 +687,9 @@ pub struct Options {
     /// greatest asked, either side open: the frontier is searched among
     /// the strategies whose expected values lie within it.
     pub window: Option<Vec<(Option<BigRational>, Option<BigRational>)>>,
+    /// Where the search shows its apexes while it runs, for a snapshot
+    /// taken from another thread; the antichain oracle writes it.
+    pub live: Option<Arc<Live>>,
     pub library: Library,
     /// The options of `determine`; the threshold is set per query.
     pub search: Config<Exact>,
@@ -832,7 +835,7 @@ pub fn frontier(tree: &Tree, opts: Options) -> Result<Report, String> {
 /// another one is at least as tight in every component kept, its cone lying
 /// inside the other. Among equal ticks the one with a witness wins, then the
 /// earlier one.
-fn minimal_apexes(apexes: &[Point], components: &[usize]) -> Vec<Point> {
+pub fn minimal_apexes(apexes: &[Point], components: &[usize]) -> Vec<Point> {
     let key = |p: &Point, i: usize| (p.witness.is_none(), i);
     let mut out = Vec::new();
     for (i, a) in apexes.iter().enumerate() {
@@ -1012,6 +1015,33 @@ struct Antichain {
     reads: AtomicUsize,
     pruned: AtomicUsize,
     sink: Option<Arc<Sink>>,
+    live: Option<Arc<Live>>,
+}
+
+/// What a search running in the background shows while it runs: every
+/// apex as it is recorded, with its witness, and the two counters of the
+/// oracle as they stood at the last apex. A snapshot is the minimal apexes
+/// of the moment.
+pub struct Live {
+    pub apexes: Mutex<Vec<Point>>,
+    pub reads: AtomicUsize,
+    pub pruned: AtomicUsize,
+}
+
+impl Live {
+    pub fn new() -> Live {
+        Live {
+            apexes: Mutex::new(Vec::new()),
+            reads: AtomicUsize::new(0),
+            pruned: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl Default for Live {
+    fn default() -> Live {
+        Live::new()
+    }
 }
 
 fn below(a: &[Exact], v: &[Exact]) -> bool {
@@ -1048,7 +1078,7 @@ impl FrontierOracle<Exact> for Antichain {
             sink.point(n, &value, &ta, strategy.decisions.len(), strategy.histories,
                        strategy.frontier_size);
         }
-        apexes.push(Point {
+        let point = Point {
             value,
             ticks: ta,
             origin: Origin::Query(n),
@@ -1058,7 +1088,13 @@ impl FrontierOracle<Exact> for Antichain {
                 open: strategy.frontier_size,
             }),
             certified: true,
-        });
+        };
+        if let Some(live) = &self.live {
+            live.apexes.lock().unwrap().push(point.clone());
+            live.reads.store(self.reads.load(Ordering::Relaxed), Ordering::Relaxed);
+            live.pruned.store(self.pruned.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        apexes.push(point);
     }
 }
 
@@ -1093,6 +1129,7 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         reads: AtomicUsize::new(0),
         pruned: AtomicUsize::new(0),
         sink: opts.anytime.clone(),
+        live: opts.live.clone(),
     });
     let mut cfg = opts.search.clone();
     cfg.threshold = set.upper.iter().cloned().map(Exact).collect();

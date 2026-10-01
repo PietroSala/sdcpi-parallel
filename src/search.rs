@@ -165,6 +165,10 @@ pub struct Config<N: Num> {
     /// every completion of it paying less than the least or more than the
     /// greatest asked there. `None` asks for everything.
     pub window: Option<Vec<(N, N)>>,
+    /// A flag another thread raises to cut the search where it stands, read
+    /// where the deadline is: the search then ends as at its time limit,
+    /// with what it found and the certificate of the cut.
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -431,6 +435,17 @@ struct Shared<'a, N: Num> {
 }
 
 impl<'a, N: Num> Shared<'a, N> {
+    /// Whether the search has to stop where it stands: the deadline passed,
+    /// or the flag of a cancel raised by another thread.
+    fn cut_now(&self) -> bool {
+        if let Some(d) = self.deadline {
+            if Instant::now() >= d {
+                return true;
+            }
+        }
+        matches!(&self.cfg.cancel, Some(c) if c.load(Ordering::Relaxed))
+    }
+
     fn finish(&self, answer: Answer<N>) {
         let mut slot = self.result.lock().unwrap();
         if slot.is_none() {
@@ -508,8 +523,8 @@ impl<'a, N: Num> Shared<'a, N> {
                 .unwrap();
             idle = guard;
             if timed.timed_out() {
-                if let Some(d) = self.deadline {
-                    if Instant::now() >= d {
+                if self.cut_now() {
+                    {
                         *idle -= 1;
                         self.sleepers.store(*idle, Ordering::Release);
                         drop(idle);
@@ -663,15 +678,11 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
         // expands a million nodes a second and reads it fifteen thousand
         // times, which is nothing, and a search on rationals expands a few
         // hundred and would otherwise never read it before it is over
-        if expanded_here % 64 == 0 {
-            if let Some(d) = shared.deadline {
-                if Instant::now() >= d {
-                    abandon(shared, &node, &local);
-                    publish(shared, expanded_here, peak_here, &mut cert);
-                    shared.finish(Answer::Timeout(Vec::new()));
-                    return;
-                }
-            }
+        if expanded_here % 64 == 0 && shared.cut_now() {
+            abandon(shared, &node, &local);
+            publish(shared, expanded_here, peak_here, &mut cert);
+            shared.finish(Answer::Timeout(Vec::new()));
+            return;
         }
 
         let closed = node.frontier.open.is_empty();

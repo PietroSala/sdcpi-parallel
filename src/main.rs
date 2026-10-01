@@ -841,6 +841,7 @@ impl SearchOptions {
             record_strategy,
             certificate: false,
             window: None,
+            cancel: None,
             steal: self.steal,
             epsilon: self.epsilon,
             workers: self.workers,
@@ -1086,6 +1087,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
             precision,
             components,
             window,
+            live: None,
             library,
             search: Config {
                 certificate: certificates.below(),

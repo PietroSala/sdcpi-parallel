@@ -172,6 +172,12 @@
   .subrow .muted { color: var(--muted); }
   #diagram svg .toggle { cursor: pointer; }
   .foot { color: var(--muted); font-size: 11.5px; margin-top: 16px; }
+  /* a search running in the background: the bar with pause and stop, and
+     the snapshot read only while it builds */
+  .livebar { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; }
+  .livebar button { width: auto; margin: 0; padding: 5px 12px; }
+  .livebar .status { margin: 0; }
+  #out.live .plotrow, #out.live .tablebox, #out.live .strategy, #out.live .switch { pointer-events: none; opacity: .8; }
 </style>
 
 <header>
@@ -721,10 +727,17 @@ function chips(names) {
   }));
 }
 
+// The search runs in the background and the page watches it: every half a
+// second a snapshot, the minimal apexes of the moment, is drawn in place of
+// the result, read only; Pause freezes the view and makes it explorable,
+// Play resumes it, Stop cuts the search, which then answers with what it
+// found and the certificate of the cut.
+let LIVE = null;   // {id, playing, timer} while a search runs
 $('f').addEventListener('submit', async (e) => {
   e.preventDefault();
+  if (LIVE) { clearTimeout(LIVE.timer); try { await fetch('/api/stop', { method: 'POST', body: new URLSearchParams({ id: LIVE.id }) }); } catch (err) {} LIVE = null; }
   $('go').disabled = true;
-  $('out').innerHTML = '<p class="status">Searching…</p>';
+  $('out').innerHTML = '<p class="status">Starting…</p>';
   const body = new URLSearchParams({
     process: $('proc').value,
     name: DOC.name || '',
@@ -735,17 +748,54 @@ $('f').addEventListener('submit', async (e) => {
     window: windowField(),
   });
   try {
-    const r = await fetch('/api/frontier', { method: 'POST', body });
+    const r = await fetch('/api/start', { method: 'POST', body });
     const d = await r.json();
     if (d.error) { $('out').innerHTML = '<div class="err"></div>';
-                   $('out').firstChild.textContent = d.error; }
-    else { LAST = d; render(d); }
+                   $('out').firstChild.textContent = d.error; $('go').disabled = false; return; }
+    LIVE = { id: d.id, playing: true, timer: null };
+    poll();
   } catch (err) {
     $('out').innerHTML = '<div class="err"></div>';
     $('out').firstChild.textContent = String(err);
+    $('go').disabled = false;
   }
-  $('go').disabled = false;
 });
+async function poll() {
+  if (!LIVE) return;
+  const mine = LIVE;
+  try {
+    const r = await fetch('/api/snapshot', { method: 'POST', body: new URLSearchParams({ id: mine.id }) });
+    const d = await r.json();
+    if (LIVE !== mine) return;   // another search started meanwhile
+    if (d.error) {
+      $('out').innerHTML = '<div class="err"></div>';
+      $('out').firstChild.textContent = d.error;
+      LIVE = null; $('go').disabled = false; return;
+    }
+    if (d.live) {
+      if (mine.playing) { LAST = d; render(d); }
+      mine.timer = setTimeout(poll, 500);
+    } else {
+      LAST = d; render(d);
+      LIVE = null; $('go').disabled = false;
+    }
+  } catch (err) {
+    if (LIVE === mine) mine.timer = setTimeout(poll, 1000);
+  }
+}
+function togglePlay() {
+  if (!LIVE) return;
+  LIVE.playing = !LIVE.playing;
+  $('out').classList.toggle('live', LIVE.playing);
+  const b = $('pause'); if (b) b.textContent = LIVE.playing ? 'Pause' : 'Play';
+  if (LIVE.playing) { clearTimeout(LIVE.timer); poll(); }
+  else if (LAST && LAST.points.length && SELECTED === null) select(0);
+}
+async function stopSearch() {
+  if (!LIVE) return;
+  try { await fetch('/api/stop', { method: 'POST', body: new URLSearchParams({ id: LIVE.id }) }); } catch (err) {}
+  if (!LIVE.playing) { LIVE.playing = true; clearTimeout(LIVE.timer); poll(); }
+}
 
 function render(d) {
   const k = d.components.length;
@@ -753,7 +803,8 @@ function render(d) {
     <div class="card"><b>${d.points.length}</b><span>points</span></div>
     <div class="card"><b>${d.seconds.toFixed(3)} s</b><span>${d.status}</span></div>
     <div class="card"><b>${d.apexes}</b><span>apexes recorded</span></div>
-    <div class="card"><b>${d.expanded}</b><span>nodes expanded</span></div>
+    ${d.live ? `<div class="card"><b>${d.pruned}</b><span>nodes closed</span></div>`
+             : `<div class="card"><b>${d.expanded}</b><span>nodes expanded</span></div>`}
     ${d.outside ? `<div class="card"><b>${d.outside}</b><span>outside the bounds</span></div>` : ''}
     ${d.points.some(p => p.certified === false)
       ? `<div class="card"><b>${d.points.filter(p => p.certified).length}</b><span>final points</span></div>
@@ -774,7 +825,13 @@ function render(d) {
   PLOT2 = null;
   SELECTED = null;
   const plot = k === 2 ? svg(d) : k >= 3 ? parallel(d) : '';
-  $('out').innerHTML = cards + `<div class="plotrow">${plot}<div class="ranges" id="ranges"></div></div>`
+  const playing = !!(d.live && LIVE && LIVE.playing);
+  const bar = d.live
+    ? `<div class="livebar"><button type="button" id="pause">${playing ? 'Pause' : 'Play'}</button>`
+      + `<button type="button" id="stopsearch" class="ghost">Stop</button>`
+      + `<span class="status">building: ${d.apexes} apexes recorded, ${d.points.length} minimal, ${d.seconds.toFixed(1)} s</span></div>`
+    : '';
+  $('out').innerHTML = bar + cards + `<div class="plotrow">${plot}<div class="ranges" id="ranges"></div></div>`
     + `<div class="strategy" id="str"><h3>Strategy</h3>
          <p class="status">Choose a point to see the strategy that attains it.</p></div>`
     + (cut ? `<label class="switch" style="margin-top:12px" for="onlyfinal"><input id="onlyfinal" type="checkbox"><span class="track"></span><span>Only the final points</span></label>` : '')
@@ -791,7 +848,14 @@ function render(d) {
     l.addEventListener('click', () => select(+l.dataset.hit));
   });
   buildRanges(d);
-  if (d.points.length) select(0);
+  $('out').classList.toggle('live', playing);
+  if (d.live) {
+    $('pause').addEventListener('click', togglePlay);
+    $('stopsearch').addEventListener('click', stopSearch);
+  }
+  if (playing) {
+    $('str').innerHTML = '<h3>Strategy</h3><p class="status">The search is building; pause to explore a point.</p>';
+  } else if (d.points.length) select(0);
 }
 
 // Range filters: one two-ended slider per impact at the right of the plot,

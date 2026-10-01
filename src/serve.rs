@@ -457,6 +457,18 @@ fn serve_one(mut stream: TcpStream, bench: &Bench) {
             let out = bounds_of(&body, bench);
             send(&mut stream, 200, "application/json", &out)
         }
+        ("POST", "/api/start") => {
+            let out = start(&body, bench);
+            send(&mut stream, 200, "application/json", &out)
+        }
+        ("POST", "/api/snapshot") => {
+            let out = snapshot(&body);
+            send(&mut stream, 200, "application/json", &out)
+        }
+        ("POST", "/api/stop") => {
+            let out = stop(&body);
+            send(&mut stream, 200, "application/json", &out)
+        }
         _ => send(&mut stream, 404, "text/plain; charset=utf-8", "no such page\n"),
     }
 }
@@ -935,10 +947,22 @@ fn bounds_of(body: &str, bench: &Bench) -> String {
     )
 }
 
-fn frontier(body: &str, bench: &Bench) -> String {
+/// What a frontier request carries, read once: the tree with the time as
+/// the page has it, the identifiers the nodes show, the window and the
+/// options of the search.
+struct Prepared {
+    tree: Tree,
+    labels: Vec<String>,
+    time: bool,
+    limit: f64,
+    window: Option<Vec<(Option<num_rational::BigRational>, Option<num_rational::BigRational>)>>,
+    opts: SearchOptions,
+}
+
+fn prepare(body: &str, bench: &Bench) -> Result<Prepared, String> {
     let text = match field(body, "process") {
         Some(t) if !t.trim().is_empty() => t,
-        _ => return err("no process was given"),
+        _ => return Err("no process was given".to_string()),
     };
     let workers = field(body, "workers").unwrap_or_else(|| "1".into());
     let ablation = field(body, "ablation").unwrap_or_else(|| "both".into());
@@ -950,32 +974,25 @@ fn frontier(body: &str, bench: &Bench) -> String {
     // the process as the parser of the crate reads it, its references to the
     // saved processes spliced in, then the tree
     let editing = editing_name(body);
-    let parsed = match assemble(&text, bench, editing.as_deref()) {
-        Ok(p) => p,
-        Err(e) => return err(&e),
-    };
+    let parsed = assemble(&text, bench, editing.as_deref())?;
     let labels = parsed.labels.clone();
-    let tree = match Tree::parse(&parsed.yaml) {
-        Ok(t) => t,
-        Err(e) => return err(&format!("the instance does not read: {e}")),
-    };
+    let tree = Tree::parse(&parsed.yaml).map_err(|e| format!("the instance does not read: {e}"))?;
     // the expected time as the component zero of the frontier, when the
     // page asks for it: the same transform the flag --time makes
     let time = matches!(field(body, "time").as_deref(), Some("1") | Some("true"));
     let tree = if time { tree.with_time() } else { tree };
     // the window on the expected values, `lo,hi;lo,hi;...` in the order of
     // the components, either side empty for the bound at the initial state
-    let window: Option<Vec<(Option<num_rational::BigRational>, Option<num_rational::BigRational>)>> =
-        field(body, "window").filter(|w| !w.trim().is_empty()).map(|w| {
-            w.split(';')
-                .map(|part| {
-                    let mut it = part.splitn(2, ',');
-                    let lo = it.next().unwrap_or("").trim().to_string();
-                    let hi = it.next().unwrap_or("").trim().to_string();
-                    (num::parse_decimal(&lo), num::parse_decimal(&hi))
-                })
-                .collect()
-        });
+    let window = field(body, "window").filter(|w| !w.trim().is_empty()).map(|w| {
+        w.split(';')
+            .map(|part| {
+                let mut it = part.splitn(2, ',');
+                let lo = it.next().unwrap_or("").trim().to_string();
+                let hi = it.next().unwrap_or("").trim().to_string();
+                (num::parse_decimal(&lo), num::parse_decimal(&hi))
+            })
+            .collect()
+    });
 
     // the flags the form gives, read by the very code the command line uses,
     // so that a default is never written twice
@@ -985,99 +1002,104 @@ fn frontier(body: &str, bench: &Bench) -> String {
         "--ablation".to_string(),
         ablation,
     ];
-    let args = match parse_args(&flags) {
-        Ok(a) => a,
-        Err(e) => return err(&e),
-    };
-    let opts = match SearchOptions::from_args(&args) {
-        Ok(o) => o,
-        Err(e) => return err(&e),
-    };
+    let args = parse_args(&flags)?;
+    let opts = SearchOptions::from_args(&args)?;
+    Ok(Prepared { tree, labels, time, limit, window, opts })
+}
 
-    let _one_at_a_time = SEARCH.lock().unwrap_or_else(|e| e.into_inner());
-    let started = Instant::now();
-    let report = pareto::frontier(
-        &tree,
-        pareto::Options {
-            onephase: true,
-            oracle: pareto::OracleKind::Antichain,
-            extract: pareto::Extract::Tightest,
-            certificates: pareto::Certificates::Both,
-            print_certificate: false,
-            // the page cannot take the limit away: a search with none does
-            // not have to terminate, and this one answers a browser
-            time_limit: Some(Duration::from_secs_f64(limit)),
-            anytime: None,
-            precision: None,
-            components: None,
-            window,
-            library: pareto::Library::Biodivine,
-            search: Config {
-                certificate: false,
-                ..opts.config::<Exact>(Vec::new(), true)
-            },
+/// The options of the frontier search of the page, in one phase against
+/// the antichain, with a live view and a cancel flag when the search runs
+/// in the background.
+fn options(
+    prep: &Prepared,
+    live: Option<std::sync::Arc<pareto::Live>>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> pareto::Options {
+    pareto::Options {
+        onephase: true,
+        oracle: pareto::OracleKind::Antichain,
+        extract: pareto::Extract::Tightest,
+        certificates: pareto::Certificates::Both,
+        print_certificate: false,
+        // the page cannot take the limit away: a search with none does
+        // not have to terminate, and this one answers a browser
+        time_limit: Some(Duration::from_secs_f64(prep.limit)),
+        anytime: None,
+        precision: None,
+        components: None,
+        window: prep.window.clone(),
+        live,
+        library: pareto::Library::Biodivine,
+        search: Config {
+            certificate: false,
+            cancel,
+            ..prep.opts.config::<Exact>(Vec::new(), true)
         },
-    );
-    let report = match report {
-        Ok(r) => r,
-        Err(e) => return err(&e),
-    };
-    let seconds = started.elapsed().as_secs_f64();
+    }
+}
 
-    let status = match &report.status {
-        pareto::Status::Complete => "complete",
-        pareto::Status::Timeout => "cut at the limit",
-        pareto::Status::Failed(_) => "failed",
+/// One point as the page reads it: the value, exact and approximate,
+/// whether it is final, and every decision of its strategy as data, the
+/// point reached and the branch taken, each node with its identifier, its
+/// name and whether it is a task.
+fn point_json(tree: &Tree, labels: &[String], p: &pareto::Point) -> String {
+    let value: Vec<String> = p.value.iter().map(|v| esc(&v.to_string())).collect();
+    let approx: Vec<String> = p
+        .value
+        .iter()
+        .map(|v| format!("{:.6}", pareto::approx(v)))
+        .collect();
+    let steps: Vec<String> = match &p.witness {
+        None => Vec::new(),
+        Some(w) => w
+            .decisions
+            .iter()
+            .map(|(history, action)| {
+                let after: Vec<String> = history.iter().map(|&id| node_json(tree, id, labels)).collect();
+                format!(
+                    "{{\"after\": [{}], \"take\": {}, \"sentence\": {}}}",
+                    after.join(", "),
+                    node_json(tree, *action, labels),
+                    esc(&decision(tree, history, *action))
+                )
+            })
+            .collect(),
     };
-    let comps: Vec<String> = report.components.iter().map(|c| c.to_string()).collect();
-    // the impacts by the names the process gives them, an index where it
-    // gives none
-    let names: Vec<String> = report
-        .components
+    format!(
+        "{{\"value\": [{}], \"approx\": [{}], \"certified\": {}, \"steps\": [{}]}}",
+        value.join(", "),
+        approx.join(", "),
+        p.certified,
+        steps.join(", ")
+    )
+}
+
+/// The names of the components as the page reads them, the impacts by the
+/// names the process gives them and an index where it gives none.
+fn names_json(tree: &Tree, components: &[usize]) -> String {
+    let names: Vec<String> = components
         .iter()
         .map(|&c| match tree.meta.impact_names.get(c) {
             Some(n) if !n.is_empty() => esc(n),
             _ => esc(&format!("impact {c}")),
         })
         .collect();
-    let mut points = Vec::new();
-    for p in &report.points {
-        let value: Vec<String> = p.value.iter().map(|v| esc(&v.to_string())).collect();
-        let approx: Vec<String> = p
-            .value
-            .iter()
-            .map(|v| format!("{:.6}", pareto::approx(v)))
-            .collect();
-        // every decision as data, the point reached and the branch taken,
-        // each node with its identifier, its name and whether it is a task,
-        // so that the page can write the sentence in the words it wants
-        let steps: Vec<String> = match &p.witness {
-            None => Vec::new(),
-            Some(w) => w
-                .decisions
-                .iter()
-                .map(|(history, action)| {
-                    let after: Vec<String> = history.iter().map(|&id| node_json(&tree, id, &labels)).collect();
-                    format!(
-                        "{{\"after\": [{}], \"take\": {}, \"sentence\": {}}}",
-                        after.join(", "),
-                        node_json(&tree, *action, &labels),
-                        esc(&decision(&tree, history, *action))
-                    )
-                })
-                .collect(),
-        };
-        points.push(format!(
-            "{{\"value\": [{}], \"approx\": [{}], \"certified\": {}, \"steps\": [{}]}}",
-            value.join(", "),
-            approx.join(", "),
-            p.certified,
-            steps.join(", ")
-        ));
-    }
+    names.join(", ")
+}
+
+/// The answer of a search that ended, cut or complete.
+fn frontier_json(prep: &Prepared, report: &pareto::Report, seconds: f64) -> String {
+    let tree = &prep.tree;
+    let status = match &report.status {
+        pareto::Status::Complete => "complete",
+        pareto::Status::Timeout => "cut at the limit",
+        pareto::Status::Failed(_) => "failed",
+    };
+    let comps: Vec<String> = report.components.iter().map(|c| c.to_string()).collect();
+    let points: Vec<String> = report.points.iter().map(|p| point_json(tree, &prep.labels, p)).collect();
     let note = if matches!(report.status, pareto::Status::Timeout) {
         format!(
-            "The search was cut at the limit. {} of the {} points are final, no open branch \
+            "The search was cut. {} of the {} points are final, no open branch \
              being able to beat them; the others are provisional, a longer run may replace them, \
              and the frontier may hold points not found yet.",
             report.certified_points,
@@ -1092,7 +1114,7 @@ fn frontier(body: &str, bench: &Bench) -> String {
          \"expanded\": {}, \"note\": {}, \"points\": [{}]}}",
         esc(status),
         seconds,
-        time,
+        prep.time,
         match &report.window {
             Some(w) => {
                 let parts: Vec<String> = w
@@ -1105,10 +1127,141 @@ fn frontier(body: &str, bench: &Bench) -> String {
         },
         report.outside,
         comps.join(", "),
-        names.join(", "),
+        names_json(tree, &report.components),
         report.accepts,
         report.search.expanded,
         esc(&note),
         points.join(", ")
     )
+}
+
+/// Runs one search and answers with the frontier, every point with the
+/// strategy that attains it.
+fn frontier(body: &str, bench: &Bench) -> String {
+    let prep = match prepare(body, bench) {
+        Ok(p) => p,
+        Err(e) => return err(&e),
+    };
+    let _one_at_a_time = SEARCH.lock().unwrap_or_else(|e| e.into_inner());
+    let started = Instant::now();
+    match pareto::frontier(&prep.tree, options(&prep, None, None)) {
+        Ok(report) => frontier_json(&prep, &report, started.elapsed().as_secs_f64()),
+        Err(e) => err(&e),
+    }
+}
+
+// -- a search in the background, watched by the page ----------------------
+
+/// A search started by the page and run in a thread of its own: the page
+/// takes snapshots of it while it runs, the minimal apexes of the moment,
+/// pauses its view to explore one, and may cut the search; the answer of
+/// the search is kept once it ends.
+struct Session {
+    prep: Prepared,
+    live: std::sync::Arc<pareto::Live>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    started: Instant,
+    done: Mutex<Option<String>>,
+}
+
+static SESSIONS: Mutex<Vec<(u64, std::sync::Arc<Session>)>> = Mutex::new(Vec::new());
+static NEXT_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn session_of(body: &str) -> Result<std::sync::Arc<Session>, String> {
+    let id: u64 = field(body, "id")
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| "no search was named".to_string())?;
+    let sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+    sessions
+        .iter()
+        .find(|(i, _)| *i == id)
+        .map(|(_, s)| s.clone())
+        .ok_or_else(|| format!("no search {id} is known"))
+}
+
+fn start(body: &str, bench: &Bench) -> String {
+    let prep = match prepare(body, bench) {
+        Ok(p) => p,
+        Err(e) => return err(&e),
+    };
+    let session = std::sync::Arc::new(Session {
+        prep,
+        live: std::sync::Arc::new(pareto::Live::new()),
+        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        started: Instant::now(),
+        done: Mutex::new(None),
+    });
+    let id = NEXT_SESSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    {
+        let mut sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.push((id, session.clone()));
+        // the last few are kept, so that a page that lost one can ask again
+        while sessions.len() > 6 {
+            sessions.remove(0);
+        }
+    }
+    let worker = session.clone();
+    let spawned = std::thread::Builder::new().stack_size(64 << 20).spawn(move || {
+        let _one_at_a_time = SEARCH.lock().unwrap_or_else(|e| e.into_inner());
+        let started = Instant::now();
+        let json = match pareto::frontier(
+            &worker.prep.tree,
+            options(&worker.prep, Some(worker.live.clone()), Some(worker.cancel.clone())),
+        ) {
+            Ok(report) => frontier_json(&worker.prep, &report, started.elapsed().as_secs_f64()),
+            Err(e) => err(&e),
+        };
+        *worker.done.lock().unwrap_or_else(|e| e.into_inner()) = Some(json);
+    });
+    match spawned {
+        Ok(_) => format!("{{\"id\": {id}}}"),
+        Err(e) => err(&format!("the search could not start: {e}")),
+    }
+}
+
+/// The search as it stands: its answer once it ended, and while it runs
+/// the minimal apexes of the moment, every one provisional, with the
+/// counters of the oracle.
+fn snapshot(body: &str) -> String {
+    let session = match session_of(body) {
+        Ok(s) => s,
+        Err(e) => return err(&e),
+    };
+    if let Some(json) = session.done.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        return json;
+    }
+    let prep = &session.prep;
+    let apexes = session.live.apexes.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let components: Vec<usize> = (0..prep.tree.k).collect();
+    let mut minimal = pareto::minimal_apexes(&apexes, &components);
+    minimal.sort_by(|a, b| a.value.cmp(&b.value));
+    for p in minimal.iter_mut() {
+        p.certified = false;
+    }
+    let comps: Vec<String> = components.iter().map(|c| c.to_string()).collect();
+    let points: Vec<String> = minimal.iter().map(|p| point_json(&prep.tree, &prep.labels, p)).collect();
+    format!(
+        "{{\"live\": true, \"status\": \"building\", \"seconds\": {:.3}, \"time\": {}, \"window\": null, \"outside\": 0, \
+         \"components\": [{}], \"names\": [{}], \"apexes\": {}, \"reads\": {}, \"pruned\": {}, \
+         \"note\": {}, \"points\": [{}]}}",
+        session.started.elapsed().as_secs_f64(),
+        prep.time,
+        comps.join(", "),
+        names_json(&prep.tree, &components),
+        apexes.len(),
+        session.live.reads.load(std::sync::atomic::Ordering::Relaxed),
+        session.live.pruned.load(std::sync::atomic::Ordering::Relaxed),
+        esc("The search is running: the points are the minimal apexes recorded so far, every one provisional. Pause to explore the snapshot, stop to cut the search with its certificate."),
+        points.join(", ")
+    )
+}
+
+fn stop(body: &str) -> String {
+    match session_of(body) {
+        Ok(s) => {
+            s.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            "{\"ok\": true}".to_string()
+        }
+        Err(e) => err(&e),
+    }
 }
