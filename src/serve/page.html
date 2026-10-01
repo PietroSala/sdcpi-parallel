@@ -192,7 +192,8 @@
   .livebar .status { margin: 0; }
   /* while it builds only the plot and the cards show; the table, the
      ranges, the strategy and the switch come back on pause */
-  #out.live .ranges, #out.live .tablebox, #out.live .strategy, #out.live .switch, #out.live .foot { display: none; }
+  #out.live .ranges, #out.live .tablebox, #out.live .strategy, #out.live .switch, #out.live .foot,
+  #out.live .pager { display: none; }
   #out.live .plotrow { pointer-events: none; }
 </style>
 
@@ -847,6 +848,9 @@ function render(d) {
   const impacts = order.filter(j => !(d.time && j === 0));
   const plot = (k === 2 || impacts.length === 2) ? svg(d) : k >= 3 ? parallel(d) : '';
   const playing = !!(d.live && LIVE && LIVE.playing);
+  // while the view builds, the block keeps the height it has, so that a
+  // snapshot drawn in its place never moves the page under the reader
+  $('out').style.minHeight = playing ? $('out').offsetHeight + 'px' : '';
   const bar = d.live
     ? `<div class="livebar"><button type="button" id="pause">${playing ? 'Pause' : 'Play'}</button>`
       + `<button type="button" id="stopsearch" class="ghost">Stop</button>`
