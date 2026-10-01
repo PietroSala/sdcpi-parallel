@@ -807,11 +807,21 @@ async function poll() {
       LIVE = null; $('go').disabled = false; return;
     }
     if (d.live) {
+      // while paused the page asks less often, only to learn of the end
       if (mine.playing) { LAST = d; render(d); }
-      mine.timer = setTimeout(poll, 500);
+      mine.timer = setTimeout(poll, mine.playing ? 500 : 2000);
     } else {
+      // the answer: it takes the place of the snapshot, and the point
+      // chosen in a pause stays chosen when the answer still has it
+      const chosen = (!mine.playing && LAST && SELECTED !== null && LAST.points[SELECTED])
+        ? LAST.points[SELECTED].value.join('|') : null;
+      LIVE = null;
       LAST = d; render(d);
-      LIVE = null; $('go').disabled = false;
+      if (chosen !== null) {
+        const i = d.points.findIndex(p => p.value.join('|') === chosen);
+        if (i >= 0) select(i);
+      }
+      $('go').disabled = false;
     }
   } catch (err) {
     if (LIVE === mine) mine.timer = setTimeout(poll, 1000);
