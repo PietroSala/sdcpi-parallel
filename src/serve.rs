@@ -957,6 +957,7 @@ struct Prepared {
     limit: f64,
     window: Option<Vec<(Option<num_rational::BigRational>, Option<num_rational::BigRational>)>>,
     opts: SearchOptions,
+    workers: usize,
 }
 
 fn prepare(body: &str, bench: &Bench) -> Result<Prepared, String> {
@@ -965,6 +966,7 @@ fn prepare(body: &str, bench: &Bench) -> Result<Prepared, String> {
         _ => return Err("no process was given".to_string()),
     };
     let workers = field(body, "workers").unwrap_or_else(|| "1".into());
+    let workers_n: usize = workers.parse::<usize>().unwrap_or(1).max(1);
     let ablation = field(body, "ablation").unwrap_or_else(|| "both".into());
     let limit = field(body, "limit")
         .and_then(|v| v.parse::<f64>().ok())
@@ -1004,7 +1006,7 @@ fn prepare(body: &str, bench: &Bench) -> Result<Prepared, String> {
     ];
     let args = parse_args(&flags)?;
     let opts = SearchOptions::from_args(&args)?;
-    Ok(Prepared { tree, labels, time, limit, window, opts })
+    Ok(Prepared { tree, labels, time, limit, window, opts, workers: workers_n })
 }
 
 /// The options of the frontier search of the page, in one phase against
@@ -1028,11 +1030,12 @@ fn options(
         precision: None,
         components: None,
         window: prep.window.clone(),
-        live,
+        live: live.clone(),
         library: pareto::Library::Biodivine,
         search: Config {
             certificate: false,
             cancel,
+            publish_open: live.is_some(),
             ..prep.opts.config::<Exact>(Vec::new(), true)
         },
     }
@@ -1184,9 +1187,10 @@ fn start(body: &str, bench: &Bench) -> String {
         Ok(p) => p,
         Err(e) => return err(&e),
     };
+    let workers = prep.workers;
     let session = std::sync::Arc::new(Session {
         prep,
-        live: std::sync::Arc::new(pareto::Live::new()),
+        live: std::sync::Arc::new(pareto::Live::new(workers)),
         cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         started: Instant::now(),
         done: Mutex::new(None),
@@ -1235,14 +1239,23 @@ fn snapshot(body: &str) -> String {
     let components: Vec<usize> = (0..prep.tree.k).collect();
     let mut minimal = pareto::minimal_apexes(&apexes, &components);
     minimal.sort_by(|a, b| a.value.cmp(&b.value));
+    // an apex is final already when no node open at this moment has its
+    // lower bound below it, as the certificate of a cut would say now;
+    // until every worker has said what it holds, nothing is final
+    let open = session.live.open_now();
     for p in minimal.iter_mut() {
-        p.certified = false;
+        p.certified = match &open {
+            None => false,
+            Some(open) => !open.iter().any(|v| components.iter().all(|&c| v[c] <= p.value[c])),
+        };
     }
+    let open_bounds = open.as_ref().map(|o| o.len()).unwrap_or(0);
+    let final_points = minimal.iter().filter(|p| p.certified).count();
     let comps: Vec<String> = components.iter().map(|c| c.to_string()).collect();
     let points: Vec<String> = minimal.iter().map(|p| point_json(&prep.tree, &prep.labels, p)).collect();
     format!(
         "{{\"live\": true, \"status\": \"building\", \"seconds\": {:.3}, \"time\": {}, \"window\": null, \"outside\": 0, \
-         \"components\": [{}], \"names\": [{}], \"apexes\": {}, \"reads\": {}, \"pruned\": {}, \
+         \"components\": [{}], \"names\": [{}], \"apexes\": {}, \"reads\": {}, \"pruned\": {}, \"open_bounds\": {}, \
          \"note\": {}, \"points\": [{}]}}",
         session.started.elapsed().as_secs_f64(),
         prep.time,
@@ -1251,7 +1264,10 @@ fn snapshot(body: &str) -> String {
         apexes.len(),
         session.live.reads.load(std::sync::atomic::Ordering::Relaxed),
         session.live.pruned.load(std::sync::atomic::Ordering::Relaxed),
-        esc("The search is running: the points are the minimal apexes recorded so far, every one provisional. Pause to explore the snapshot, stop to cut the search with its certificate."),
+        open_bounds,
+        esc(&format!(
+            "The search is running: the points are the minimal apexes recorded so far, {final_points} of them final already, no open node being able to beat them, the others provisional. Pause to explore the snapshot, stop to cut the search with its certificate."
+        )),
         points.join(", ")
     )
 }

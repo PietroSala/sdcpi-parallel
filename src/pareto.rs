@@ -1026,21 +1026,36 @@ pub struct Live {
     pub apexes: Mutex<Vec<Point>>,
     pub reads: AtomicUsize,
     pub pruned: AtomicUsize,
+    /// What every worker holds open, by worker, as it last published it:
+    /// `None` for a worker that has not spoken yet, whose nodes are then
+    /// unknown and keep every apex provisional.
+    pub open: Mutex<Vec<Option<Vec<Vec<BigRational>>>>>,
 }
 
 impl Live {
-    pub fn new() -> Live {
+    pub fn new(workers: usize) -> Live {
         Live {
             apexes: Mutex::new(Vec::new()),
             reads: AtomicUsize::new(0),
             pruned: AtomicUsize::new(0),
+            open: Mutex::new(vec![None; workers.max(1)]),
         }
+    }
+
+    /// The lower bounds open at this moment over every worker, or `None`
+    /// while some worker has not published yet.
+    pub fn open_now(&self) -> Option<Vec<Vec<BigRational>>> {
+        let open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        if open.iter().any(|o| o.is_none()) {
+            return None;
+        }
+        Some(open.iter().flatten().flatten().cloned().collect())
     }
 }
 
 impl Default for Live {
     fn default() -> Live {
-        Live::new()
+        Live::new(1)
     }
 }
 
@@ -1049,6 +1064,21 @@ fn below(a: &[Exact], v: &[Exact]) -> bool {
 }
 
 impl FrontierOracle<Exact> for Antichain {
+    fn open(&self, worker: usize, bounds: Vec<Vec<Exact>>) {
+        if let Some(live) = &self.live {
+            let mut open = live.open.lock().unwrap_or_else(|e| e.into_inner());
+            if open.len() <= worker {
+                open.resize(worker + 1, None);
+            }
+            open[worker] = Some(
+                bounds
+                    .iter()
+                    .map(|v| v.iter().map(|e| e.0.clone()).collect())
+                    .collect(),
+            );
+        }
+    }
+
     fn known(&self, v: &[Exact]) -> bool {
         self.reads.fetch_add(1, Ordering::Relaxed);
         let known = self.set.read().unwrap().iter().any(|a| below(a, v));

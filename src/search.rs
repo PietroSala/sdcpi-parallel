@@ -125,6 +125,12 @@ pub trait FrontierOracle<N: Num>: Send + Sync {
     /// The budget `v` is feasible, every completion of the strategy paying at
     /// most that; the cone above it enters the diagram.
     fn add(&self, v: &[N], strategy: Strategy<N>);
+    /// What a worker holds open at this moment, the Pareto-minimal lower
+    /// bounds of the node in its hand and of the nodes on its stacks, so
+    /// that a snapshot of the search can say which apexes no open node can
+    /// beat any more; an empty list when the worker holds nothing. Read by
+    /// a search watched while it runs and by nothing else.
+    fn open(&self, _worker: usize, _bounds: Vec<Vec<N>>) {}
 }
 
 #[derive(Clone)]
@@ -169,6 +175,10 @@ pub struct Config<N: Num> {
     /// where the deadline is: the search then ends as at its time limit,
     /// with what it found and the certificate of the cut.
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Whether every worker publishes, every sixty-four expansions, what it
+    /// holds open, through `FrontierOracle::open`: on for a search watched
+    /// while it runs, off otherwise, the publication having a cost.
+    pub publish_open: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -593,6 +603,12 @@ fn work<'a, N: Num>(shared: &Shared<'a, N>, worker: usize) {
         let node = match shared.take(worker) {
             Some(n) => n,
             None => {
+                // an idle worker holds nothing open, and says so
+                if shared.cfg.publish_open {
+                    if let Some(o) = &shared.cfg.oracle {
+                        o.open(worker, Vec::new());
+                    }
+                }
                 if shared.wait(worker) {
                     continue;
                 }
@@ -646,6 +662,12 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
                 insert_minimal(&mut all, v);
             }
         }
+        // on the way out the worker holds nothing open
+        if shared.cfg.publish_open {
+            if let Some(o) = &shared.cfg.oracle {
+                o.open(worker, Vec::new());
+            }
+        }
     };
     // What a worker leaves open when the search is cut: the node in hand and
     // the nodes on its local stack, each by its lower bound, so that the cut
@@ -678,11 +700,36 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
         // expands a million nodes a second and reads it fifteen thousand
         // times, which is nothing, and a search on rationals expands a few
         // hundred and would otherwise never read it before it is over
-        if expanded_here % 64 == 0 && shared.cut_now() {
-            abandon(shared, &node, &local);
-            publish(shared, expanded_here, peak_here, &mut cert);
-            shared.finish(Answer::Timeout(Vec::new()));
-            return;
+        if expanded_here % 64 == 0 {
+            if shared.cut_now() {
+                abandon(shared, &node, &local);
+                publish(shared, expanded_here, peak_here, &mut cert);
+                shared.finish(Answer::Timeout(Vec::new()));
+                return;
+            }
+            if cfg.publish_open {
+                // what this worker holds open: the node in hand, its local
+                // stack and its shared stack, by their lower bounds, as the
+                // certificate of a cut would read them now
+                if let Some(oracle) = &cfg.oracle {
+                    let mut mine: Vec<Vec<N>> = Vec::new();
+                    let mut sum = zeros::<N>(k);
+                    node.frontier.rejecting(&mut sum);
+                    insert_minimal(&mut mine, sum.clone());
+                    for n in &local {
+                        n.frontier.rejecting(&mut sum);
+                        insert_minimal(&mut mine, sum.clone());
+                    }
+                    {
+                        let g = shared.stacks[worker].items.lock().unwrap();
+                        for n in g.iter() {
+                            n.frontier.rejecting(&mut sum);
+                            insert_minimal(&mut mine, sum.clone());
+                        }
+                    }
+                    oracle.open(worker, mine);
+                }
+            }
         }
 
         let closed = node.frontier.open.is_empty();
