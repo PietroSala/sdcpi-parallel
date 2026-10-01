@@ -1424,6 +1424,14 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     }];
     let mut sol = grid.cone_above(&o, &zero);
     for i in 0..k {
+        // the lower bound of an impact is attained, by the strategy that
+        // takes the least branch at every choice, so the budget on its axis
+        // is feasible without a query; the lower bound of the time is a
+        // bound and not a value, under natures below a parallel node no
+        // strategy pays it, and its axis is left to the queries
+        if tree.time && i == 0 {
+            continue;
+        }
         let mut ta = zero.clone();
         ta[i] = ticks[i].clone();
         let mut v = upper.clone();

@@ -478,8 +478,11 @@ fn cmd_info(args: &[String]) -> i32 {
     println!("  choice      {choices}");
     println!("  nature      {natures}");
     println!("max duration  {}", m.max_duration);
-    let total = tree.total_impact();
+    let total = tree.undirected().total_impact();
     println!("total impact  {}", fmt_vec(&total));
+    if tree.maximized.iter().any(|&m| m) {
+        println!("maximized     [{}]", tree.maximized_names().join(", "));
+    }
     0
 }
 fn cmd_parse(args: &[String]) -> i32 {
@@ -579,6 +582,8 @@ fn cmd_to_text(args: &[String]) -> i32 {
         Ok(v) => v,
         Err(e) => return fail(&e),
     };
+    // the instance as it was written, whatever direction a flag gave it
+    let tree = tree.undirected();
     let fresh = match args.flag("regenerate") {
         None => None,
         Some(mode) => {
@@ -621,6 +626,8 @@ fn cmd_to_svg(args: &[String]) -> i32 {
         Ok(v) => v,
         Err(e) => return fail(&e),
     };
+    // the instance as it was written, whatever direction a flag gave it
+    let tree = tree.undirected();
     let detailed = match args.flag("detail") {
         None | Some("false") => false,
         Some("true") => true,
@@ -1095,7 +1102,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
         Some(_) if !onephase => {
             return fail("--anytime wants --onephase 1: in two phases the apexes are not recorded one by one")
         }
-        Some(path) => match anytime::Sink::create(std::path::Path::new(path)) {
+        Some(path) => match anytime::Sink::create(std::path::Path::new(path), tree.maximized.clone()) {
             Ok(sink) => Some(std::sync::Arc::new(sink)),
             Err(e) => return fail(&e),
         },
@@ -1350,7 +1357,7 @@ fn json_report(tree: &Tree, r: &pareto::Report, elapsed: Duration, decisions: bo
     o.push_str(&format!("  \"peak_open\": {},\n", r.search.peak_open));
     o.push_str("  \"points\": [\n");
     for (i, p) in r.points.iter().enumerate() {
-        let approx: Vec<String> = p.value.iter().map(|v| format!("{:.9}", pareto::approx(v))).collect();
+        let approx: Vec<String> = tree.shown_vec(&p.value).iter().map(|v| format!("{:.9}", pareto::approx(v))).collect();
         o.push_str("    {\n");
         o.push_str(&format!("      \"value\": {},\n", strs(&tree.shown_vec(&p.value))));
         o.push_str(&format!("      \"certified\": {},\n", p.certified));
@@ -1421,6 +1428,7 @@ fn cmd_bound(args: &[String]) -> i32 {
             l[c] += h.l_hat[c];
         }
     }
+    let (e, l) = tree.shown_bounds_f64(&e, &l);
     println!("root E     {}", fmt_vec(&e));
     println!("root L     {}", fmt_vec(&l));
     println!("root size  {} histories", initial.len());

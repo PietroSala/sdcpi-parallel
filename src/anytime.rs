@@ -47,6 +47,8 @@ pub trait Progress: Send + Sync {
 
 pub struct Sink {
     out: Mutex<BufWriter<File>>,
+    /// Which components are maximized, so that a value is written as shown.
+    maximized: Vec<bool>,
 }
 
 fn secs() -> f64 {
@@ -55,9 +57,9 @@ fn secs() -> f64 {
 
 impl Sink {
     /// Creates the buffer, truncating what was there: one run, one file.
-    pub fn create(path: &Path) -> Result<Sink, String> {
+    pub fn create(path: &Path, maximized: Vec<bool>) -> Result<Sink, String> {
         let file = File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(Sink { out: Mutex::new(BufWriter::new(file)) })
+        Ok(Sink { out: Mutex::new(BufWriter::new(file)), maximized })
     }
 
     /// Appends one line and pushes it to the kernel. A write that fails is
@@ -72,10 +74,12 @@ impl Sink {
     }
 
     pub fn start(&self, workers: usize) {
+        let m: Vec<String> = self.maximized.iter().map(|b| b.to_string()).collect();
         self.line(&format!(
-            "{{\"t\": {:.6}, \"start\": true, \"workers\": {}}}",
+            "{{\"t\": {:.6}, \"start\": true, \"workers\": {}, \"maximized\": [{}]}}",
             secs(),
-            workers
+            workers,
+            m.join(", ")
         ));
     }
 
@@ -100,7 +104,16 @@ impl Sink {
         histories: usize,
         open: usize,
     ) {
-        let v: Vec<String> = value.iter().map(|x| format!("\"{x}\"")).collect();
+        // the value as it is shown, the sign turned back on a maximized
+        // component; the ticks stay the coordinates of the grid
+        let v: Vec<String> = value
+            .iter()
+            .enumerate()
+            .map(|(c, x)| {
+                let shown = if self.maximized.get(c).copied().unwrap_or(false) { -x.clone() } else { x.clone() };
+                format!("\"{shown}\"")
+            })
+            .collect();
         let k: Vec<String> = ticks.iter().map(|x| x.to_string()).collect();
         self.line(&format!(
             "{{\"t\": {:.6}, \"n\": {}, \"v\": [{}], \"k\": [{}], \"d\": {}, \"h\": {}, \"o\": {}}}",

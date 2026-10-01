@@ -906,7 +906,14 @@ fn diagram(body: &str, bench: &Bench) -> String {
 fn directions(tree: Tree, body: &str) -> Result<Tree, String> {
     match field(body, "maximize").filter(|m| !m.trim().is_empty()) {
         Some(m) => {
-            let names: Vec<String> = m.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+            // the page remembers a direction by name across the edits of the
+            // text, so a name the process no longer has is dropped and not
+            // refused
+            let names: Vec<String> = m
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty() && tree.meta.impact_names.iter().any(|n| n == t))
+                .collect();
             tree.with_directions(&names)
         }
         None => Ok(tree),

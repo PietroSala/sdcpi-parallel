@@ -1050,7 +1050,9 @@ function refreshBounds() {
     try {
       const r = await fetch('/api/bounds', { method: 'POST', body });
       const d = await r.json();
-      if (d.names) { buildDirs(d); buildWindow(d); } else { $('wbox').hidden = true; $('dbox').hidden = true; }
+      if (d.names) { buildDirs(d); buildWindow(d); }
+      else if (d.error && WNAMES.length) { /* a text that does not read yet: the panels stay as they were */ }
+      else { $('wbox').hidden = true; $('dbox').hidden = true; }
     } catch (e) { /* the server is away */ }
   }, 250);
 }
@@ -1291,7 +1293,9 @@ function pointToWindow(p) {
     const R = WINDOW[n];
     if (!R || R.flat) return;
     const v = Math.min(Math.max(+p.approx[j], R.a), R.b);
-    if (isMax(LAST, j)) { R.lo = v; if (R.hi < R.lo) R.hi = R.lo; }
+    // by the direction the next search takes, which is the one of the
+    // dropdown now, not the one the result was computed with
+    if (DIRS[n] === 'max') { R.lo = v; if (R.hi < R.lo) R.hi = R.lo; }
     else { R.hi = v; if (R.lo > R.hi) R.lo = R.hi; }
     const i = WNAMES.indexOf(n);
     const track = $('window').querySelector(`.rng[data-w="${i}"]`);

@@ -191,7 +191,10 @@ impl Tree {
         if meta.impact_names.is_empty() {
             meta.impact_names = (0..self.k).map(|c| format!("impact{c}")).collect();
         }
-        meta.impact_names.insert(0, "time".to_string());
+        // the clock is named time, unless an impact took the name already:
+        // then it is the expected time, so that a name says one component
+        let clock = if meta.impact_names.iter().any(|n| n == "time") { "expected time" } else { "time" };
+        meta.impact_names.insert(0, clock.to_string());
         meta.dimensions = k;
         let mut maximized = self.maximized.clone();
         maximized.insert(0, false);
@@ -248,6 +251,24 @@ impl Tree {
             }
         }
         Ok(tree)
+    }
+
+    /// The same process with no direction: the negated columns turned back
+    /// and every flag cleared, the instance as it was written, for the
+    /// commands that print or draw it.
+    pub fn undirected(&self) -> Tree {
+        let mut tree = self.clone();
+        let k = tree.k;
+        for c in 0..k {
+            if tree.maximized[c] {
+                for id in 0..tree.nodes.len() {
+                    tree.impacts[id * k + c] = -tree.impacts[id * k + c];
+                    tree.impacts_exact[id * k + c] = -tree.impacts_exact[id * k + c].clone();
+                }
+                tree.maximized[c] = false;
+            }
+        }
+        tree
     }
 
     /// The names of the maximized components.
