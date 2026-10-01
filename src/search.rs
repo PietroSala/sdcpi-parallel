@@ -159,6 +159,12 @@ pub struct Config<N: Num> {
     /// rejecting sums of the leaves of the exhausted tree, every strategy
     /// paying at least one of them.
     pub certificate: bool,
+    /// A window on the expected values, the least and the greatest asked
+    /// per component: a node whose interval, the rejecting sum to the
+    /// accepting one, misses the window in some component is left at once,
+    /// every completion of it paying less than the least or more than the
+    /// greatest asked there. `None` asks for everything.
+    pub window: Option<Vec<(N, N)>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -672,6 +678,29 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
         let open_now = node.frontier.open.len() as u64;
         if open_now > peak_here {
             peak_here = open_now;
+        }
+
+        if let Some(w) = &cfg.window {
+            // the window on the expected values: the interval of the node
+            // is the rejecting sum to the accepting one, and a component in
+            // which it misses the window leaves no completion inside
+            node.frontier.accepting(&mut scratch);
+            let mut low = zeros::<N>(k);
+            node.frontier.rejecting(&mut low);
+            let one = |a: &N, b: &N| N::leq(std::slice::from_ref(a), std::slice::from_ref(b), 0.0);
+            let outside = (0..k).any(|c| !one(&w[c].0, &scratch[c]) || !one(&low[c], &w[c].1));
+            if outside {
+                match local.pop_back() {
+                    Some(next) => {
+                        node = next;
+                        continue;
+                    }
+                    None => {
+                        publish(shared, expanded_here, peak_here, &mut cert);
+                        return;
+                    }
+                }
+            }
         }
 
         if let Some(oracle) = &cfg.oracle {

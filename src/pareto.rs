@@ -683,6 +683,10 @@ pub struct Options {
     /// The components the frontier is taken over, the others left at their
     /// upper bound; `None` for all of them.
     pub components: Option<Vec<usize>>,
+    /// A window on the expected values, per component the least and the
+    /// greatest asked, either side open: the frontier is searched among
+    /// the strategies whose expected values lie within it.
+    pub window: Option<Vec<(Option<BigRational>, Option<BigRational>)>>,
     pub library: Library,
     /// The options of `determine`; the threshold is set per query.
     pub search: Config<Exact>,
@@ -774,6 +778,45 @@ pub struct Report {
     pub status: Status,
     /// The frontier, sorted by the first component.
     pub points: Vec<Point>,
+    /// The window the frontier was searched in, every side filled with the
+    /// bound at the initial state where it was open, and how many points
+    /// found fell outside it and were left out.
+    pub window: Option<Vec<(BigRational, BigRational)>>,
+    pub outside: usize,
+}
+
+/// The window of the options with its open sides filled by the two bounds
+/// at the initial state, as the search reads it.
+fn window_filled(
+    opts: &Options,
+    lower: &[BigRational],
+    upper: &[BigRational],
+) -> Option<Vec<(Exact, Exact)>> {
+    opts.window.as_ref().map(|w| {
+        (0..lower.len())
+            .map(|c| {
+                let lo = w.get(c).and_then(|p| p.0.clone()).unwrap_or_else(|| lower[c].clone());
+                let hi = w.get(c).and_then(|p| p.1.clone()).unwrap_or_else(|| upper[c].clone());
+                (Exact(lo), Exact(hi))
+            })
+            .collect()
+    })
+}
+
+/// The points within the window, and how many were not.
+fn within_window(points: Vec<Point>, window: Option<&[(Exact, Exact)]>) -> (Vec<Point>, usize) {
+    match window {
+        None => (points, 0),
+        Some(w) => {
+            let before = points.len();
+            let kept: Vec<Point> = points
+                .into_iter()
+                .filter(|p| (0..w.len()).all(|c| w[c].0 .0 <= p.value[c] && p.value[c] <= w[c].1 .0))
+                .collect();
+            let outside = before - kept.len();
+            (kept, outside)
+        }
+    }
 }
 
 pub fn frontier(tree: &Tree, opts: Options) -> Result<Report, String> {
@@ -1053,6 +1096,8 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     });
     let mut cfg = opts.search.clone();
     cfg.threshold = set.upper.iter().cloned().map(Exact).collect();
+    let window = window_filled(&opts, &set.lower, &set.upper);
+    cfg.window = window.clone();
     cfg.record_strategy = true;
     cfg.certificate = false;
     cfg.oracle = Some(match opts.oracle {
@@ -1155,6 +1200,7 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         sink.minimal(minimal.len());
     }
     let elapsed = started.elapsed();
+    let (minimal, outside) = within_window(minimal, window.as_deref());
     Ok(Report {
         library: o.name(),
         onephase: true,
@@ -1190,6 +1236,8 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         search: st,
         status,
         points: minimal,
+        window: window.map(|w| w.into_iter().map(|(a, b)| (a.0, b.0)).collect()),
+        outside,
     })
 }
 
@@ -1225,6 +1273,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     let b = bounds::<Exact>(tree, &s0);
     let upper: Vec<BigRational> = b.upper.into_iter().map(|e| e.0).collect();
     let lower: Vec<BigRational> = b.lower.into_iter().map(|e| e.0).collect();
+    let window = window_filled(&opts, &lower, &upper);
 
     let (eps, denominator) = match &opts.precision {
         Some(e) => {
@@ -1360,6 +1409,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         };
         let asked: Vec<BigRational> = (0..k).map(|i| grid.budget(i, &tx[i])).collect();
         let mut cfg = opts.search.clone();
+        cfg.window = window.clone();
         cfg.threshold = asked.iter().cloned().map(Exact).collect();
         cfg.record_strategy = true;
         cfg.certificate = opts.certificates.below();
@@ -1511,6 +1561,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
                 continue;
             }
             let mut cfg = opts.search.clone();
+            cfg.window = window.clone();
             cfg.threshold = p.value.iter().map(|r| Exact(r.clone())).collect();
             cfg.record_strategy = true;
             cfg.certificate = false;
@@ -1547,6 +1598,7 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
     }
     let certified_points = minimal.iter().filter(|p| p.certified).count();
 
+    let (minimal, outside) = within_window(minimal, window.as_deref());
     Ok(Report {
         library: o.name(),
         onephase: false,
@@ -1582,6 +1634,8 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         search: total,
         status,
         points: minimal,
+        window: window.map(|w| w.into_iter().map(|(a, b)| (a.0, b.0)).collect()),
+        outside,
     })
 }
 

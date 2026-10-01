@@ -184,6 +184,11 @@ options for pareto
   --obdd-library L      biodivine | oxidd                 (default biodivine)
   --components i,j,...  the frontier over these components only, the others
                         left at their upper bound       (default all)
+  --window lo..hi,...   the frontier among the strategies whose expected
+                        values lie within these ranges, one per component
+                        in order, either side empty for the bound at the
+                        initial state; a partial strategy that cannot land
+                        inside is left at once
   --time-limit SECS     stop the exploration after this many seconds in all
                         and report the frontier found so far as partial; a
                         query never runs past the time left
@@ -835,6 +840,7 @@ impl SearchOptions {
             oracle: None,
             record_strategy,
             certificate: false,
+            window: None,
             steal: self.steal,
             epsilon: self.epsilon,
             workers: self.workers,
@@ -1007,6 +1013,32 @@ fn cmd_pareto(args: &[String]) -> i32 {
             Some(out)
         }
     };
+    // the window on the expected values: per component `lo..hi`, either
+    // side empty, separated by commas, in the order of the components
+    let window = match args.flag("window") {
+        None => None,
+        Some(t) => {
+            let mut out = Vec::new();
+            for part in t.split(',') {
+                let (lo, hi) = match part.trim().split_once("..") {
+                    Some(p) => p,
+                    None => return fail(&format!("--window wants lo..hi per component, found {part:?}")),
+                };
+                let side = |s: &str| -> Result<Option<num_rational::BigRational>, String> {
+                    if s.trim().is_empty() {
+                        Ok(None)
+                    } else {
+                        num::parse_decimal(s.trim()).map(Some).ok_or_else(|| format!("{s:?} is not a decimal"))
+                    }
+                };
+                match (side(lo), side(hi)) {
+                    (Ok(a), Ok(b)) => out.push((a, b)),
+                    (Err(e), _) | (_, Err(e)) => return fail(&format!("--window: {e}")),
+                }
+            }
+            Some(out)
+        }
+    };
     let extract = match args.flag("extract").map(pareto::Extract::parse) {
         None => pareto::Extract::Tightest,
         Some(Some(e)) => e,
@@ -1053,6 +1085,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
             anytime,
             precision,
             components,
+            window,
             library,
             search: Config {
                 certificate: certificates.below(),
@@ -1094,6 +1127,13 @@ fn cmd_pareto(args: &[String]) -> i32 {
     }
     let comps: Vec<String> = report.components.iter().map(|c| c.to_string()).collect();
     println!("components     [{}]", comps.join(", "));
+    if let Some(w) = &report.window {
+        let parts: Vec<String> = w
+            .iter()
+            .map(|(a, b)| format!("{:.6}..{:.6}", pareto::approx(a), pareto::approx(b)))
+            .collect();
+        println!("window         [{}], {} points found outside it", parts.join(", "), report.outside);
+    }
     println!("U at s0        {}", dec(&report.upper));
     println!("L at s0        {}", dec(&report.lower));
     let ticks: Vec<String> = report.ticks.iter().map(|t| t.to_string()).collect();
