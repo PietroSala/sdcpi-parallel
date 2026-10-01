@@ -146,6 +146,8 @@
   .rng.red .fill { background: #d0342c; }
   .rng.red .thumb { border-color: #d0342c; }
   .rng.red .thumb:focus { outline-color: #f3c9c2; }
+  .strategy h3 button { width: auto; margin: 0 0 0 10px; padding: 3px 9px; font-size: 12px; font-weight: 500;
+                        vertical-align: middle; }
   /* the diagram lives in a viewport that zooms and pans; the handle at its
      bottom right corner makes it taller */
   #diagram { position: relative; height: 380px; min-height: 160px; margin-bottom: 16px;
@@ -1160,8 +1162,28 @@ function select(i, reveal = true) {
     const dec = v.includes('/') ? ` (${String(+p.approx[j])})` : '';
     return `<span style="margin-right:14px">${h(names[j])} <code>${v}</code>${dec}</span>`;
   }).join('');
-  $('str').innerHTML = `<h3>Strategy of point ${i + 1}</h3>`
+  $('str').innerHTML = `<h3>Strategy of point ${i + 1} <button type="button" id="tobounds" class="small ghost"
+      title="the values of this point become the upper bounds of the search">Use as upper bounds</button></h3>`
     + `<div style="margin-bottom:7px">expected: ${values}</div>` + lines;
+  $('tobounds').addEventListener('click', () => pointToWindow(p));
+}
+
+// The values of a point as the upper bounds of the window: the search then
+// looks below this point, the lower ends left where they are.
+function pointToWindow(p) {
+  if (!LAST || !WNAMES.length) return;
+  const names = d_names(LAST);
+  names.forEach((n, j) => {
+    const R = WINDOW[n];
+    if (!R || R.flat) return;
+    const v = +p.approx[j];
+    R.hi = Math.min(Math.max(v, R.a), R.b);
+    if (R.lo > R.hi) R.lo = R.hi;
+    const i = WNAMES.indexOf(n);
+    const track = $('window').querySelector(`.rng[data-w="${i}"]`);
+    if (track) paintTrack(track, R, $('wval' + i));
+  });
+  $('wbox').scrollIntoView({ block: 'nearest' });
 }
 
 // Parallel coordinates: one vertical axis per impact, scaled from the least
