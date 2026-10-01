@@ -40,6 +40,9 @@ is nothing to install beyond what is already there, it runs on the three
 desktop systems and inside a container alike, and it binds `127.0.0.1` and
 never every address, because it runs a computation for whoever asks.
 
+With two impacts the plot is the plane of the two, the time, when it is
+in, as the colour of the points, from light for the shortest to dark for
+the longest, and the staircase is drawn only when the frontier is plane.
 The block "Directions" of the form sets, per component, whether the frontier
 takes the least or the greatest expected value, the time included; every
 label of the page carries the arrow of its direction, the bounds on the

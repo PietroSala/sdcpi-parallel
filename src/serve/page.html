@@ -838,11 +838,14 @@ function render(d) {
   const cut = d.points.some(p => p.certified === false);
   const head = '<tr><th>#</th>' + order.map(j => `<th>${h(names[j])} ${arrow(d, j)}</th>`).join('')
              + '<th>decisions</th>' + (cut ? '<th>final</th>' : '') + '</tr>';
-  // two impacts are a staircase in the plane; three or more are parallel
-  // coordinates, one axis per impact, a line per point, however many
+  // two impacts are the plane of the two, the time, when it is in, as
+  // the colour of the points; two components are the plane as well; three
+  // or more impacts are parallel coordinates, one axis per component, a
+  // line per point, however many
   PLOT2 = null;
   SELECTED = null;
-  const plot = k === 2 ? svg(d) : k >= 3 ? parallel(d) : '';
+  const impacts = order.filter(j => !(d.time && j === 0));
+  const plot = (k === 2 || impacts.length === 2) ? svg(d) : k >= 3 ? parallel(d) : '';
   const playing = !!(d.live && LIVE && LIVE.playing);
   const bar = d.live
     ? `<div class="livebar"><button type="button" id="pause">${playing ? 'Pause' : 'Play'}</button>`
@@ -1154,7 +1157,7 @@ function applyFilter() {
     const i = +(el.dataset.i !== undefined ? el.dataset.i : el.dataset.hit);
     el.style.display = keep[i] ? '' : 'none';
   });
-  if (PLOT2) {
+  if (PLOT2 && PLOT2.stair) {
     // the staircase follows the points kept
     const kept = PLOT2.P.map((p, i) => [p, i]).filter(([, i]) => keep[i]).sort((a, b) => a[0][0] - b[0][0]);
     let path = '';
@@ -1233,9 +1236,11 @@ function select(i, reveal = true) {
   });
   document.querySelectorAll('svg circle[data-i]').forEach(c => {
     const on = +c.dataset.i === i, prov = LAST.points[+c.dataset.i].certified === false;
+    // the colour of the dot is its own, the time when the plane carries it
+    const own = c.dataset.c || '#2a78d6';
     c.setAttribute('r', on ? 5.5 : 3);
-    c.setAttribute('fill', on ? (prov ? '#fff' : '#d0342c') : (prov ? '#fff' : '#2a78d6'));
-    c.setAttribute('stroke', on ? '#d0342c' : '#2a78d6');
+    c.setAttribute('fill', on ? (prov ? '#fff' : '#d0342c') : (prov ? '#fff' : own));
+    c.setAttribute('stroke', on ? '#d0342c' : own);
   });
   document.querySelectorAll('svg polyline[data-i]').forEach(l => {
     const on = +l.dataset.i === i;
@@ -1365,9 +1370,17 @@ function pcGroup(d, order, title) {
 }
 
 function svg(d) {
-  const [ox, oy] = d_order(d), names = d_names(d);
+  const order = d_order(d), names = d_names(d);
+  // the two impacts on the axes; with the time among them, the time and
+  // the one impact; with two impacts and the time in, the time is the
+  // colour of the points, from light for the shortest to dark for the
+  // longest, and the frontier is no staircase in the plane, a point may be
+  // beaten there and win on the time
+  const impacts = order.filter(j => !(d.time && j === 0));
+  const [ox, oy] = impacts.length === 2 ? impacts : order.slice(0, 2);
+  const byTime = !!(d.time && impacts.length === 2);
   const P = d.points.map(p => [p.approx[ox], p.approx[oy]]);
-  const W = 460, H = 280, M = { l: 52, r: 18, t: 14, b: 38 };
+  const W = 460, H = 280, M = { l: 52, r: 18, t: byTime ? 26 : 14, b: 38 };
   const xs = P.map(p => p[0]), ys = P.map(p => p[1]);
   const pad = (a) => { const lo = Math.min(...a), hi = Math.max(...a);
                        const d = (hi - lo) || Math.abs(hi) || 1; return [lo - d * 0.12, hi + d * 0.12]; };
@@ -1382,22 +1395,43 @@ function svg(d) {
   for (const v of tick(y0, y1))
     g += `<line x1="${M.l}" y1="${Y(v)}" x2="${W - M.r}" y2="${Y(v)}" stroke="#eeede9"/>`
        + `<text x="${M.l - 7}" y="${Y(v) + 4}" font-size="11" fill="#6e6e6e" text-anchor="end">${v}</text>`;
+  // the colour of a point by its time, a lightness from 78 down to 32 on
+  // the hue of the time
+  const times = d.points.map(p => +p.approx[0]);
+  const tlo = Math.min(...times), thi = Math.max(...times);
+  const colour = (t) => {
+    const f = thi > tlo ? (t - tlo) / (thi - tlo) : 0.5;
+    return `hsl(32, 88%, ${Math.round(78 - 46 * f)}%)`;
+  };
   const sorted = P.map((p, i) => [p, i]).sort((a, b) => a[0][0] - b[0][0]);
-  PLOT2 = { X, Y, P };
+  PLOT2 = { X, Y, P, stair: !byTime };
   let path = '';
-  for (let j = 0; j < sorted.length; j++) {
-    const [p] = sorted[j];
-    path += (j === 0 ? `M ${X(p[0])} ${Y(p[1])}` : ` L ${X(p[0])} ${Y(sorted[j - 1][0][1])} L ${X(p[0])} ${Y(p[1])}`);
+  if (!byTime) {
+    for (let j = 0; j < sorted.length; j++) {
+      const [p] = sorted[j];
+      path += (j === 0 ? `M ${X(p[0])} ${Y(p[1])}` : ` L ${X(p[0])} ${Y(sorted[j - 1][0][1])} L ${X(p[0])} ${Y(p[1])}`);
+    }
   }
+  const fmt = (v) => String(+(+v).toFixed(3));
   const dots = sorted.map(([p, i]) => {
     const prov = d.points[i].certified === false;
-    return `<circle data-i="${i}"${prov ? ' data-prov="1"' : ''} cx="${X(p[0])}" cy="${Y(p[1])}" r="3" fill="${prov ? '#fff' : '#2a78d6'}"`
-         + ` stroke="#2a78d6" stroke-width="1.4"${prov ? ' stroke-dasharray="2 1.5"' : ''}/>`;
+    const own = byTime ? colour(times[i]) : '#2a78d6';
+    const tip = order.map(j => `${names[j]} ${fmt(d.points[i].approx[j])}`).join(', ');
+    return `<circle data-i="${i}" data-c="${own}"${prov ? ' data-prov="1"' : ''} cx="${X(p[0])}" cy="${Y(p[1])}" r="3" fill="${prov ? '#fff' : own}"`
+         + ` stroke="${own}" stroke-width="1.4"${prov ? ' stroke-dasharray="2 1.5"' : ''} style="cursor:pointer"><title>${h(tip)}</title></circle>`;
   }).join('');
+  // the legend of the time, a gradient from the shortest to the longest
+  const legend = byTime
+    ? `<defs><linearGradient id="tgrad" x1="0" x2="1" y1="0" y2="0">
+         <stop offset="0" stop-color="${colour(tlo)}"/><stop offset="1" stop-color="${colour(thi)}"/></linearGradient></defs>
+       <text x="${W - M.r - 96}" y="12" font-size="10.5" fill="#b45309" text-anchor="end">${h(names[0])} ${fmt(tlo)}</text>
+       <rect x="${W - M.r - 90}" y="4" width="60" height="9" fill="url(#tgrad)" stroke="#d9d7d0" stroke-width="0.6"/>
+       <text x="${W - M.r - 26}" y="12" font-size="10.5" fill="#b45309">${fmt(thi)}</text>`
+    : '';
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
-    ${g}
-    <path data-stair="1" d="${path}" fill="none" stroke="#2a78d6" stroke-width="1.2"
-          stroke-dasharray="3 2" opacity="0.6"/>
+    ${g}${legend}
+    ${byTime ? '' : `<path data-stair="1" d="${path}" fill="none" stroke="#2a78d6" stroke-width="1.2"
+          stroke-dasharray="3 2" opacity="0.6"/>`}
     ${dots}
     <line x1="${M.l}" y1="${H - M.b}" x2="${W - M.r}" y2="${H - M.b}" stroke="#52514e"/>
     <line x1="${M.l}" y1="${M.t}" x2="${M.l}" y2="${H - M.b}" stroke="#52514e"/>
