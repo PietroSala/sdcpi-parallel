@@ -417,6 +417,11 @@ impl<'a> Parser<'a> {
         if k == 0 {
             return self.err("the header carries no dimensions");
         }
+        // the header is read before the tree, and the vectors are sized by
+        // it: a count no instance can have is refused before any allocation
+        if n_nodes > 20_000_000 || k > 10_000 || (n_nodes + 1).saturating_mul(k) > 200_000_000 {
+            return self.err("the header declares more nodes or dimensions than an instance can hold");
+        }
         self.nodes = vec![
             Node {
                 kind: Kind::Task,

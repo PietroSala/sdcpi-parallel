@@ -239,7 +239,13 @@ more suites will arrive as the library evolves. The dispatcher knows
 only that contract, so the library stays free of what the suites
 measure, and the options of a suite are listed by its own `--help`.
 
-The suite included today confronts the built binary with the recorded
+Seven more suites, the batteries over the command line, the page server,
+the page in a headless browser, a fuzzer, Storm as a referee and the
+agreement of this binary with the loop tool, live in the repository of
+the loop tool, `sdcpi-loop`, under `scripts/`, and take this binary with
+`--bin PATH --no-loops`.
+
+The suite included here confronts the built binary with the recorded
 reference campaign:
 
 ```sh

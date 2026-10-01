@@ -422,6 +422,11 @@ fn parse_region(
     if d <= 0 {
         return Err(format!("the task {name} carries the duration {d}, and a duration is a positive integer"));
     }
+    // the state holds the progress of a task in a byte: a longer duration
+    // would be written and refused by every command that reads the file
+    if d > 127 {
+        return Err(format!("the task {name} carries the duration {d}, and a duration is at most 127, the state holding a progress in a byte"));
+    }
     let mut impact: Vec<(usize, f64)> = Vec::new();
     sc.skip();
     if sc.peek() == Some(b',') {

@@ -787,6 +787,9 @@ $('f').addEventListener('submit', async (e) => {
     if (d.error) { $('out').innerHTML = '<div class="err"></div>';
                    $('out').firstChild.textContent = d.error; $('go').disabled = false; return; }
     LIVE = { id: d.id, playing: true, timer: null };
+    // the button stays live: a search started while one runs cuts the one
+    // before, as the handler above does
+    $('go').disabled = false;
     poll();
   } catch (err) {
     $('out').innerHTML = '<div class="err"></div>';
@@ -809,7 +812,7 @@ async function poll() {
     if (d.live) {
       // while paused the page asks less often, only to learn of the end
       if (mine.playing) { LAST = d; render(d); }
-      mine.timer = setTimeout(poll, mine.playing ? 500 : 2000);
+      mine.timer = setTimeout(poll, mine.playing || mine.stopping ? 500 : 2000);
     } else {
       // the answer: it takes the place of the snapshot, and the point
       // chosen in a pause stays chosen when the answer still has it
@@ -838,7 +841,9 @@ function togglePlay() {
 async function stopSearch() {
   if (!LIVE) return;
   try { await fetch('/api/stop', { method: 'POST', body: new URLSearchParams({ id: LIVE.id }) }); } catch (err) {}
-  if (!LIVE.playing) { LIVE.playing = true; clearTimeout(LIVE.timer); poll(); }
+  // the answer is asked for at once; a pause stays a pause, so that the
+  // point chosen in it is kept when the answer comes
+  if (LIVE) { LIVE.stopping = true; clearTimeout(LIVE.timer); poll(); }
 }
 
 function render(d) {
@@ -1356,7 +1361,8 @@ function pointToWindow(p) {
 // drawn only when the whole frontier has two components.
 function plotHtml(d) {
   const order = d_order(d);
-  if (order.length < 2) return '';
+  // nothing to draw: no axis of nothing, which would have no scale
+  if (order.length < 2 || (!d.points.length && !(d.outside_points || []).length)) return '';
   const mins = order.filter(j => !isMax(d, j)), maxs = order.filter(j => isMax(d, j));
   if (!mins.length || !maxs.length) return groupPlot(d, order, '');
   return `<div class="pcs">${groupPlot(d, mins, 'minimize \u2193')}${groupPlot(d, maxs, 'maximize \u2191')}</div>`;

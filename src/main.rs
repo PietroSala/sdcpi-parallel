@@ -236,6 +236,10 @@ pub(crate) struct Args {
     flags: Vec<(String, String)>,
 }
 
+/// Every option some command takes: an option outside this list is a
+/// mistake, refused with its name, never ignored in silence.
+const KNOWN_OPTIONS: &[&str] = &["B", "B-file", "ablation", "anytime", "arith", "bars", "bench", "certificate", "clocks", "components", "detail", "encode-history", "epsilon", "extract", "file", "impacts", "json", "max-states", "maximize", "names", "no-exact", "obdd-library", "onephase", "oracle", "out", "pareto", "port", "precision", "print-certificate", "print-size", "print-strategy", "regenerate", "saved", "seed", "selection", "steal", "time", "time-limit", "timeout", "tooltips", "window", "workers"];
+
 pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut out = Args {
         positional: Vec::new(),
@@ -245,16 +249,23 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     while i < args.len() {
         let a = &args[i];
         if let Some(name) = a.strip_prefix("--") {
-            if let Some((n, v)) = name.split_once('=') {
-                out.flags.push((n.to_string(), v.to_string()));
+            let (n, v) = if let Some((n, v)) = name.split_once('=') {
                 i += 1;
+                (n.to_string(), v.to_string())
             } else {
                 let v = args
                     .get(i + 1)
                     .ok_or_else(|| format!("--{name} wants a value"))?;
-                out.flags.push((name.to_string(), v.clone()));
                 i += 2;
+                (name.to_string(), v.clone())
+            };
+            if !KNOWN_OPTIONS.contains(&n.as_str()) {
+                return Err(format!("unknown option --{n}; see `sdcpi help`"));
             }
+            if out.flags.iter().any(|(m, _)| *m == n) {
+                return Err(format!("--{n} is given twice"));
+            }
+            out.flags.push((n, v));
         } else {
             out.positional.push(a.clone());
             i += 1;
@@ -277,6 +288,9 @@ fn load(args: &Args) -> Result<(PathBuf, Tree), String> {
         .positional
         .first()
         .ok_or_else(|| "no instance given".to_string())?;
+    if args.positional.len() > 1 {
+        return Err(format!("unexpected argument {:?} after the instance", args.positional[1]));
+    }
     let path = PathBuf::from(spec);
     let tree = Tree::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     // the expected time as the component zero, in front of the impacts,
@@ -477,7 +491,14 @@ fn cmd_info(args: &[String]) -> i32 {
     });
     println!("  choice      {choices}");
     println!("  nature      {natures}");
-    println!("max duration  {}", m.max_duration);
+    // the header of a campaign file carries it; a file written by parse
+    // does not, and the tree says it
+    let max_duration = if m.max_duration > 0 {
+        m.max_duration
+    } else {
+        tree.tasks.iter().map(|&t| tree.node(t).duration as u32).max().unwrap_or(0)
+    };
+    println!("max duration  {max_duration}");
     let total = tree.undirected().total_impact();
     println!("total impact  {}", fmt_vec(&total));
     if tree.maximized.iter().any(|&m| m) {
@@ -646,6 +667,9 @@ fn cmd_to_svg(args: &[String]) -> i32 {
         Some(list) => {
             let names = svg::impact_names(&tree);
             let wanted: Vec<&str> = list.split(',').map(str::trim).collect();
+            if let Some(w) = wanted.iter().find(|w| !names.iter().any(|n| n == *w)) {
+                return fail(&format!("--bars names {w:?}, and the instance has [{}]", names.join(", ")));
+            }
             Some(
                 svg::alphabetical(&tree)
                     .into_iter()
@@ -826,10 +850,13 @@ impl SearchOptions {
                 .flag("epsilon")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.0),
-            workers: args
-                .flag("workers")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(1),
+            workers: match args.flag("workers") {
+                None => 1,
+                Some(v) => match v.parse::<usize>() {
+                    Ok(w) if (1..=256).contains(&w) => w,
+                    _ => return Err(format!("--workers wants a whole number from 1 to 256, found {v:?}")),
+                },
+            },
             ablation: match args.flag("ablation").map(Ablation::parse) {
                 None => Ablation::Both,
                 Some(Some(a)) => a,
@@ -1075,6 +1102,14 @@ fn cmd_pareto(args: &[String]) -> i32 {
                     (Ok(a), Ok(b)) => out.push((a, b)),
                     (Err(e), _) | (_, Err(e)) => return fail(&format!("--window: {e}")),
                 }
+            }
+            if out.len() != tree.k {
+                return fail(&format!(
+                    "--window has {} ranges, the instance has {} components{}",
+                    out.len(),
+                    tree.k,
+                    if tree.time { ", the time among them" } else { "" }
+                ));
             }
             Some(out)
         }

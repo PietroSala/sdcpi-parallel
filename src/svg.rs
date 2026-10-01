@@ -180,7 +180,7 @@ fn task_box_lines(tree: &Tree, id: u32, s: &Sizes) -> (Vec<(&'static str, String
     if s.style.clocks {
         tip.push(duration);
     }
-    if s.style.tooltips || s.style.bars.is_some() {
+    if s.style.tooltips {
         tip.push(if impacts.is_empty() { "no impact".to_string() } else { impacts });
     }
     (lines, tip.join(" · "))

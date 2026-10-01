@@ -299,9 +299,14 @@ fn closes_a_cycle(text: &str, name: &str, entries: &[(String, String)]) -> Optio
 fn referrers<'a>(name: &str, entries: &'a [(String, String)]) -> Vec<&'a str> {
     let bare = format!("@{name}");
     let quoted = format!("@\"{name}\"");
+    // a mention inside a comment is no reference
+    let code = |t: &str| -> String {
+        t.lines().map(|l| l.split('#').next().unwrap_or("")).collect::<Vec<_>>().join("\n")
+    };
     entries
         .iter()
         .filter(|(n, t)| {
+            let t = &code(t);
             n != name
                 && (t.contains(&quoted)
                     || t.match_indices(&bare).any(|(i, _)| {
@@ -920,13 +925,32 @@ fn directions(tree: Tree, body: &str) -> Result<Tree, String> {
     }
 }
 
+/// A double as JSON: a finite number, or null where a rational is past
+/// what a double holds, which JSON cannot write.
+fn jnum(x: f64) -> String {
+    if x.is_finite() {
+        format!("{x}")
+    } else {
+        "null".to_string()
+    }
+}
+
+/// The same with six decimals.
+fn jnum6(x: f64) -> String {
+    if x.is_finite() {
+        format!("{x:.6}")
+    } else {
+        "null".to_string()
+    }
+}
+
 /// The points found outside the window, as the page draws them for
 /// context: their values alone, shown, with no strategy.
 fn outside_json(tree: &Tree, points: &[pareto::Point]) -> String {
     let items: Vec<String> = points
         .iter()
         .map(|p| {
-            let approx: Vec<String> = tree.shown_vec(&p.value).iter().map(|v| format!("{:.6}", pareto::approx(v))).collect();
+            let approx: Vec<String> = tree.shown_vec(&p.value).iter().map(|v| jnum6(pareto::approx(v))).collect();
             format!("{{\"approx\": [{}]}}", approx.join(", "))
         })
         .collect();
@@ -975,7 +999,7 @@ fn bounds_of(body: &str, bench: &Bench) -> String {
     let rat = |v: &[Exact]| -> Vec<num_rational::BigRational> { v.iter().map(|x| x.0.clone()).collect() };
     let (shown_u, shown_l) = tree.shown_bounds(&rat(&b.upper), &rat(&b.lower));
     let side = |v: &[num_rational::BigRational]| -> String {
-        let parts: Vec<String> = v.iter().map(|x| format!("{}", pareto::approx(x))).collect();
+        let parts: Vec<String> = v.iter().map(|x| jnum(pareto::approx(x))).collect();
         format!("[{}]", parts.join(", "))
     };
     let exact = |v: &[num_rational::BigRational]| -> String {
@@ -1012,11 +1036,14 @@ fn prepare(body: &str, bench: &Bench) -> Result<Prepared, String> {
         Some(t) if !t.trim().is_empty() => t,
         _ => return Err("no process was given".to_string()),
     };
-    let workers = field(body, "workers").unwrap_or_else(|| "1".into());
-    let workers_n: usize = workers.parse::<usize>().unwrap_or(1).max(1);
+    // the workers between 1 and 64 whatever the field says, and the limit
+    // a finite number of seconds: the page is one client of many
+    let workers_n: usize = field(body, "workers").and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, 64);
+    let workers = workers_n.to_string();
     let ablation = field(body, "ablation").unwrap_or_else(|| "both".into());
     let limit = field(body, "limit")
-        .and_then(|v| v.parse::<f64>().ok())
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite())
         .unwrap_or(30.0)
         .clamp(1.0, MAX_LIMIT);
 
@@ -1110,7 +1137,7 @@ fn point_json(tree: &Tree, labels: &[String], p: &pareto::Point) -> String {
     // the value as it is shown, the sign turned back on a maximized component
     let shown = tree.shown_vec(&p.value);
     let value: Vec<String> = shown.iter().map(|v| esc(&v.to_string())).collect();
-    let approx: Vec<String> = shown.iter().map(|v| format!("{:.6}", pareto::approx(v))).collect();
+    let approx: Vec<String> = shown.iter().map(|v| jnum6(pareto::approx(v))).collect();
     let steps: Vec<String> = match &p.witness {
         None => Vec::new(),
         Some(w) => w
@@ -1205,7 +1232,7 @@ fn frontier_json(prep: &Prepared, report: &pareto::Report, seconds: f64) -> Stri
                     .enumerate()
                     .map(|(c, (a, b))| {
                         let (a, b) = if tree.maximized.get(c).copied().unwrap_or(false) { (-b.clone(), -a.clone()) } else { (a.clone(), b.clone()) };
-                        format!("[{}, {}]", pareto::approx(&a), pareto::approx(&b))
+                        format!("[{}, {}]", jnum(pareto::approx(&a)), jnum(pareto::approx(&b)))
                     })
                     .collect();
                 format!("[{}]", parts.join(", "))

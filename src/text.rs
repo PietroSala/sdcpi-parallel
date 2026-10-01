@@ -29,6 +29,12 @@ pub const MODES: [&str; 6] = [
 /// A vector as the grammar writes it: six decimals at most, trailing zeros
 /// gone, as the generator of the instances writes them.
 fn number(v: f64) -> String {
+    // six decimals, as the generator writes them; a value that six
+    // decimals would print as zero keeps its exponent form, so that the
+    // text read back has every impact the instance has
+    if v != 0.0 && v.abs() < 5e-7 {
+        return format!("{v:e}");
+    }
     let s = format!("{v:.6}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
     if s.is_empty() || s == "-0" {
