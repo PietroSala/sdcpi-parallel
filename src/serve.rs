@@ -1160,16 +1160,17 @@ fn frontier_json(prep: &Prepared, report: &pareto::Report, seconds: f64) -> Stri
     let comps: Vec<String> = report.components.iter().map(|c| c.to_string()).collect();
     let points: Vec<String> = report.points.iter().map(|p| point_json(tree, &prep.labels, p)).collect();
     let cut = matches!(report.status, pareto::Status::Timeout);
-    let mut note = if report.points.is_empty() && report.outside > 0 {
+    let grey = if report.outside > 0 { " What the search found outside them is drawn grey." } else { "" };
+    let mut note = if report.points.is_empty() && report.window.is_some() {
         if cut {
-            "The search was cut before a point landed within the bounds; what it found feasible lies \
-             outside them and is drawn grey. A longer run may find points within."
-                .to_string()
+            format!(
+                "The search was cut before a point landed within the bounds; a longer run may find one.{grey}"
+            )
         } else {
-            "No strategy keeps its expected values within the bounds: the frontier is empty there, \
-             and the points found outside are drawn grey."
-                .to_string()
+            format!("No strategy keeps its expected values within the bounds: the frontier is empty there.{grey}")
         }
+    } else if report.points.is_empty() {
+        "The search was cut before it found a point; a longer run may find one.".to_string()
     } else if cut {
         format!(
             "The search was cut. {} of the {} points are final, no open branch \
