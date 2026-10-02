@@ -329,6 +329,9 @@
       is exact.</div>
   </div>
 
+  </details>
+  <details class="group" id="g-computation">
+    <summary>Computation</summary>
   <div class="row">
     <div>
       <label for="workers">Workers</label>
@@ -347,11 +350,14 @@
     </div>
   </div>
 
-  <label for="limit">Time limit, seconds</label>
-  <input id="limit" type="number" min="1" max="600" step="1" value="30">
+  <div class="row" style="margin-top:14px">
+    <div>
+      <label for="limit">Time limit, seconds</label>
+      <input id="limit" type="number" min="1" max="600" step="1" value="30">
+    </div>
+  </div>
   <div class="hint">A search cut at the limit returns the points it had found, which are
     candidates and not yet verified optima.</div>
-
   </details>
 </form>
 
