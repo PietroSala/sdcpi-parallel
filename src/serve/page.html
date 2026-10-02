@@ -225,6 +225,13 @@
 
 <main>
 <form id="f">
+  <div id="dbox" hidden>
+    <div class="rhead"><span><b>Objective function</b></span></div>
+    <div id="dirs"></div>
+    <div class="hint">Minimize or maximize each expected value. A point is on the frontier when no
+      other is at least as good in every direction and better in one.</div>
+  </div>
+  <button id="go" type="submit" style="margin-top:12px;margin-bottom:14px">Compute the frontier</button>
   <details class="group" id="g-process" open>
     <summary>Process</summary>
   <div class="namerow">
@@ -301,12 +308,6 @@
     of the impacts: a parallel node lasts as long as the longer of its regions, and the fast
     forward pays each advance once.</div>
 
-  <div id="dbox" hidden>
-    <div class="rhead" style="margin-top:14px"><span><b>Directions</b></span></div>
-    <div id="dirs"></div>
-    <div class="hint">Minimize or maximize each expected value. A point is on the frontier when no
-      other is at least as good in every direction and better in one.</div>
-  </div>
   <div id="wbox" hidden>
     <div class="rhead" style="margin-top:14px"><span><b>Bounds on the expected values</b></span>
       <button type="button" id="wreset">Reset</button></div>
@@ -349,7 +350,6 @@
   <div class="hint">A search cut at the limit returns the points it had found, which are
     candidates and not yet verified optima.</div>
 
-  <button id="go" type="submit">Compute the frontier</button>
 </form>
 
 <section>
