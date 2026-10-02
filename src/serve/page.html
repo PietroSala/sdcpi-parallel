@@ -83,6 +83,13 @@
   details { border: 1px solid var(--line); border-radius: 6px; padding: 8px 11px 10px;
             margin-bottom: 14px; background: #fff; }
   summary { cursor: pointer; font-size: 12px; font-weight: 600; letter-spacing: 0.01em; }
+  /* the groups of the form: one open at a time by the reader, the Process
+     one open at the start; the panels inside keep their own box */
+  details.group { margin-bottom: 10px; background: var(--panel); }
+  details.group > summary { font-size: 13.5px; font-weight: 700; }
+  details.group[open] > summary { margin-bottom: 6px; }
+  details.group > details { margin-top: 10px; }
+  details.group > label:first-of-type { margin-top: 10px; }
   details label:first-of-type { margin-top: 14px; }
   details .row:first-of-type label { margin-top: 10px; }
   section { padding: 18px 22px; overflow: auto; }
@@ -218,6 +225,23 @@
 
 <main>
 <form id="f">
+  <details class="group" id="g-process" open>
+    <summary>Process</summary>
+  <div class="namerow">
+    <button type="button" id="newp" class="small ghost" title="start a new, empty process">+</button>
+    <span id="pname" class="pname untitled" title="click to name the process" spellcheck="false">untitled</span>
+    <span id="pstate" class="badge" hidden></span>
+    <span class="grow"></span>
+    <button type="button" id="rollback" class="small ghost" hidden title="back to the text saved under this name">Rollback</button>
+    <button type="button" id="save" class="small">Save</button>
+  </div>
+  <div id="savenote" class="hint"></div>
+  <textarea id="proc" spellcheck="false" aria-label="Process"></textarea>
+  <div class="hint" id="grammar"></div>
+  <details id="savedpanel">
+    <summary>Saved processes</summary>
+    <div id="savedbox" class="hint">Nothing saved yet. Name the process above its text and press Save.</div>
+  </details>
   <details id="bench" hidden>
     <summary>Load a process of the benchmark</summary>
     <div class="row">
@@ -238,12 +262,9 @@
     <div class="hint" id="benchnote">The thousand processes of the benchmark, ten per pair of nesting and
       independence, with the impacts of the campaign; drawn again by the mode chosen when the switch is on.</div>
   </details>
-
-  <details id="savedpanel">
-    <summary>Saved processes</summary>
-    <div id="savedbox" class="hint">Nothing saved yet. Name the process above its text and press Save.</div>
   </details>
-
+  <details class="group" id="g-display">
+    <summary>Display</summary>
   <details id="subpanel" hidden>
     <summary>Sub-processes</summary>
     <div class="subhead"><button type="button" id="subopen" class="small ghost">Expand all</button>
@@ -252,20 +273,6 @@
     <div class="hint">The saved processes this text refers to with <code>@name</code>, each drawn as one box
       until it is expanded, here or with the plus on its border.</div>
   </details>
-
-  <label for="proc">Process</label>
-  <div class="namerow">
-    <button type="button" id="newp" class="small ghost" title="start a new, empty process">+</button>
-    <span id="pname" class="pname untitled" title="click to name the process" spellcheck="false">untitled</span>
-    <span id="pstate" class="badge" hidden></span>
-    <span class="grow"></span>
-    <button type="button" id="rollback" class="small ghost" hidden title="back to the text saved under this name">Rollback</button>
-    <button type="button" id="save" class="small">Save</button>
-  </div>
-  <div id="savenote" class="hint"></div>
-  <textarea id="proc" spellcheck="false"></textarea>
-  <div class="hint" id="grammar"></div>
-
   <label class="switch" for="detail"><input id="detail" type="checkbox" checked><span class="track"></span><span>Detailed regions</span></label>
   <div class="hint">Every region of the tree in a dashed box with its identifier, and the
     identifier among the data of every task.</div>
@@ -283,6 +290,11 @@
     duration against the longest of the process, whole for the longest; the number stays in the tooltip.</div>
   <label class="switch" for="names"><input id="names" type="checkbox" checked><span class="track"></span><span>Show names</span></label>
   <div class="hint">The name of its impact at the left of every bar, and the duration under the clock.</div>
+  </details>
+
+
+
+
 
   <label class="switch" for="time"><input id="time" type="checkbox" checked><span class="track"></span><span>Expected time</span></label>
   <div class="hint">The expected time of the process as the component zero of the frontier, in front
