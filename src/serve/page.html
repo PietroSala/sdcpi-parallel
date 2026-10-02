@@ -140,7 +140,7 @@
                 box-shadow: 0 1px 2px rgba(0,0,0,.15); }
   .rng .thumb:focus { outline: 2px solid #a9c7ec; outline-offset: 1px; }
   /* the window of the search, in the form: the same sliders in red */
-  #wbox .rhead button { width: auto; margin: 0; padding: 3px 9px; font-size: 12px; background: #fff;
+  #wbox .rhead button, #tbox .rhead button { width: auto; margin: 0; padding: 3px 9px; font-size: 12px; background: #fff;
                         color: var(--ink); border: 1px solid var(--line); border-radius: 4px; }
   #wbox .range { margin: 4px 0 8px; font-size: 12.5px; }
   /* the directions of the components, one select per name */
@@ -167,6 +167,9 @@
   .rng.red .fill { background: #d0342c; }
   .rng.red .thumb { border-color: #d0342c; }
   .rng.red .thumb:focus { outline-color: #f3c9c2; }
+  .rng.green .fill { background: var(--good); }
+  .rng.green .thumb { border-color: var(--good); }
+  .rng.green .thumb:focus { outline-color: #bfe9d6; }
   .strategy h3 button { width: auto; margin: 0 0 0 10px; padding: 3px 9px; font-size: 12px; font-weight: 500;
                         vertical-align: middle; }
   /* the diagram lives in a viewport that zooms and pans; the handle at its
@@ -299,6 +302,16 @@
     <div class="hint">The frontier is searched among the strategies whose expected values lie
       within these bounds, which start at the two bounds of the process; a partial strategy
       that cannot land inside them is left at once.</div>
+  </div>
+  <div id="tbox" hidden>
+    <div class="rhead" style="margin-top:14px"><span><b>Tolerances</b></span>
+      <button type="button" id="treset">Reset</button></div>
+    <div id="tols"></div>
+    <div class="hint">A fraction of the range of each expected value, shown with what it is worth:
+      a point within these of a point found is left out, and a partial strategy that cannot leave
+      them is closed. The frontier is then an approximation: every strategy is within the tolerances
+      of a point reported, and no point reported is within them of another. At zero the frontier
+      is exact.</div>
   </div>
 
   <div class="row">
@@ -780,6 +793,7 @@ $('f').addEventListener('submit', async (e) => {
     time: $('time').checked ? '1' : '0',
     window: windowField(),
     maximize: dirsField(),
+    tolerance: tolField(),
   });
   try {
     const r = await fetch('/api/start', { method: 'POST', body });
@@ -872,10 +886,15 @@ function render(d) {
   // while the view builds, the block keeps the height it has, so that a
   // snapshot drawn in its place never moves the page under the reader
   $('out').style.minHeight = playing ? $('out').offsetHeight + 'px' : '';
-  const bar = d.live
+  // the bar of a running search is made once and kept through the
+  // snapshots, its text updated: a button made anew every half a second
+  // can lose the click that lands on it
+  const oldBar = d.live ? $('out').querySelector('.livebar') : null;
+  const barText = `building: ${d.apexes} apexes recorded, ${d.points.length} minimal, ${d.seconds.toFixed(1)} s`;
+  const bar = d.live && !oldBar
     ? `<div class="livebar"><button type="button" id="pause">${playing ? 'Pause' : 'Play'}</button>`
       + `<button type="button" id="stopsearch" class="ghost">Stop</button>`
-      + `<span class="status">building: ${d.apexes} apexes recorded, ${d.points.length} minimal, ${d.seconds.toFixed(1)} s</span></div>`
+      + `<span class="status">${barText}</span></div>`
     : '';
   $('out').innerHTML = bar + cards + `<div class="plotrow">${plot}<div class="ranges" id="ranges"></div></div>`
     + `<div class="strategy" id="str"><h3>Strategy</h3>
@@ -903,8 +922,14 @@ function render(d) {
   buildRanges(d);
   $('out').classList.toggle('live', playing);
   if (d.live) {
-    $('pause').addEventListener('click', togglePlay);
-    $('stopsearch').addEventListener('click', stopSearch);
+    if (oldBar) {
+      $('out').prepend(oldBar);
+      oldBar.querySelector('.status').textContent = barText;
+      oldBar.querySelector('#pause').textContent = playing ? 'Pause' : 'Play';
+    } else {
+      $('pause').addEventListener('click', togglePlay);
+      $('stopsearch').addEventListener('click', stopSearch);
+    }
   }
   if (playing) {
     $('str').innerHTML = '<h3>Strategy</h3><p class="status">The search is building; pause to explore a point.</p>';
@@ -925,7 +950,7 @@ const pos = (R, v) => R.b > R.a ? (v - R.a) / (R.b - R.a) : 0;
 
 // The two thumbs of a range object R, with the extremes a, b and the ends
 // lo, hi as values.
-const thumbHtml = (R, name) => ['lo', 'hi'].map(end =>
+const thumbHtml = (R, name) => (R.single ? ['hi'] : ['lo', 'hi']).map(end =>
   `<div class="thumb ${end}" data-end="${end}" tabindex="${R.flat ? -1 : 0}" role="slider"`
   + ` aria-label="${h(name)}, ${end === 'lo' ? 'least' : 'greatest'}" aria-valuemin="${R.a}" aria-valuemax="${R.b}"></div>`).join('');
 
@@ -934,6 +959,8 @@ const thumbHtml = (R, name) => ['lo', 'hi'].map(end =>
 function moveEnd(R, end, f) {
   f = Math.min(1, Math.max(0, f));
   const v = f <= 0 ? R.a : f >= 1 ? R.b : R.a + f * (R.b - R.a);
+  // a single-ended slider moves its one end, the other pinned at the start
+  if (R.single) { R.hi = v; return; }
   // an end moved by hand loses the exact value a point may have given it
   if (end === 'lo') { R.lo = Math.min(v, R.hi); R.loX = null; } else { R.hi = Math.max(v, R.lo); R.hiX = null; }
 }
@@ -944,13 +971,14 @@ function paintTrack(el, R, valEl) {
   const l = pos(R, R.lo) * 100, r = R.flat ? 100 : pos(R, R.hi) * 100;
   el.querySelector('.fill').style.left = l + '%';
   el.querySelector('.fill').style.width = (r - l) + '%';
-  el.querySelector('.thumb.lo').style.left = l + '%';
+  const tl = el.querySelector('.thumb.lo');
+  if (tl) tl.style.left = l + '%';
   el.querySelector('.thumb.hi').style.left = r + '%';
-  if (valEl) valEl.textContent = R.flat ? fmt6(R.a) : `${fmt6(R.lo)} to ${fmt6(R.hi)}`;
-  el.querySelector('.thumb.lo').setAttribute('aria-valuenow', R.lo);
-  el.querySelector('.thumb.hi').setAttribute('aria-valuenow', R.hi);
-  el.querySelector('.thumb.lo').setAttribute('aria-valuetext', fmt6(R.lo));
-  el.querySelector('.thumb.hi').setAttribute('aria-valuetext', fmt6(R.hi));
+  if (valEl) valEl.textContent = R.text ? R.text(R) : R.flat ? fmt6(R.a) : `${fmt6(R.lo)} to ${fmt6(R.hi)}`;
+  if (tl) { tl.setAttribute('aria-valuenow', R.lo); tl.setAttribute('aria-valuetext', fmt6(R.lo)); }
+  const th = el.querySelector('.thumb.hi');
+  th.setAttribute('aria-valuenow', R.hi);
+  th.setAttribute('aria-valuetext', R.text ? R.text(R) : fmt6(R.hi));
 }
 
 // the pointer and the keyboard on a track: changed() is called after every
@@ -966,6 +994,12 @@ function attachSlider(track, R, changed) {
   track.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     if (R.flat) return;
+    if (R.single) {
+      // one end: a press anywhere carries it there
+      end = 'hi'; moveEnd(R, end, frac(e)); changed();
+      focusThumb('hi'); track.setPointerCapture(e.pointerId); e.preventDefault();
+      return;
+    }
     const f = frac(e), onThumb = e.target.dataset.end, together = R.lo === R.hi;
     if (onThumb) {
       // a press on a thumb takes it as it is, only a move carries it; with
@@ -1074,13 +1108,44 @@ function buildDirs(b) {
     refreshBounds();
   }));
 }
+// The tolerances, by name: a fraction of the range of the component, kept
+// through the edits of the text, shown with what it is worth in the units
+// of the component.
+let TOL = {};
+function tolField() {
+  // by name, so that a text that changed its components since the last
+  // bounds answer gets what it can and never a count that does not fit
+  return WNAMES.filter(n => TOL[n] && TOL[n].hi > 0).map(n => `${n}=${TOL[n].hi}`).join(';');
+}
+function buildTolerances(b, order) {
+  const box = $('tols');
+  $('tbox').hidden = order.length === 0;
+  box.innerHTML = order.map(i => {
+    const n = b.names[i];
+    const R = TOL[n] || (TOL[n] = { a: 0, b: 1, lo: 0, hi: 0, flat: false, single: true });
+    R.range = +b.upper[i] - +b.lower[i];
+    // a component with one value has no range to take a fraction of
+    R.flat = !(R.range > 0);
+    if (R.flat) R.hi = 0;
+    R.text = (R) => R.hi <= 0 ? 'exact'
+      : `${(R.hi * 100).toFixed(1)}% \u00b7 \u00b1${fmt6(R.hi * R.range)}`;
+    return `<div class="range${R.flat ? ' flat' : ''}">
+      <div class="rname"><span>${h(n)} ${arrow(b, i)}</span><span class="rval" id="tval${i}"></span></div>
+      <div class="rng green" data-t="${i}"><div class="fill"></div>${thumbHtml(R, n)}</div></div>`;
+  }).join('');
+  order.forEach(i => paintTrack(box.querySelector(`.rng[data-t="${i}"]`), TOL[b.names[i]], $('tval' + i)));
+  box.querySelectorAll('.rng').forEach(track => {
+    const i = +track.dataset.t, R = TOL[b.names[i]];
+    attachSlider(track, R, () => paintTrack(track, R, $('tval' + i)));
+  });
+}
 let WINDOW = {};   // by name: the extremes a, b and the ends lo, hi
 let WNAMES = [];   // the names in the order of the server, the time first
 let boundsTimer = null;
 function refreshBounds() {
   clearTimeout(boundsTimer);
   boundsTimer = setTimeout(async () => {
-    if ($('proc').value.trim() === '') { $('wbox').hidden = true; $('dbox').hidden = true; WNAMES = []; return; }
+    if ($('proc').value.trim() === '') { $('wbox').hidden = true; $('dbox').hidden = true; $('tbox').hidden = true; WNAMES = []; return; }
     const body = new URLSearchParams({ process: $('proc').value, name: DOC.name || '',
                                        time: $('time').checked ? '1' : '0',
                                        maximize: dirsField() });
@@ -1089,7 +1154,7 @@ function refreshBounds() {
       const d = await r.json();
       if (d.names) { buildDirs(d); buildWindow(d); }
       else if (d.error && WNAMES.length) { /* a text that does not read yet: the panels stay as they were */ }
-      else { $('wbox').hidden = true; $('dbox').hidden = true; }
+      else { $('wbox').hidden = true; $('dbox').hidden = true; $('tbox').hidden = true; }
     } catch (e) { /* the server is away */ }
   }, 250);
 }
@@ -1122,7 +1187,15 @@ function buildWindow(b) {
     const i = +track.dataset.w, R = WINDOW[b.names[i]];
     attachSlider(track, R, () => paintTrack(track, R, $('wval' + i)));
   });
+  buildTolerances(b, order);
 }
+$('treset').addEventListener('click', () => {
+  WNAMES.forEach((n, i) => {
+    const R = TOL[n]; if (!R) return;
+    R.hi = 0;
+    paintTrack($('tols').querySelector(`.rng[data-t="${i}"]`), R, $('tval' + i));
+  });
+});
 $('wreset').addEventListener('click', () => {
   WNAMES.forEach((n, i) => {
     const R = WINDOW[n]; if (!R) return;
@@ -1133,11 +1206,12 @@ $('wreset').addEventListener('click', () => {
 // the window as the server reads it: per component in its order, the two
 // ends, empty where an end was not moved
 function windowField() {
-  return WNAMES.map(n => {
+  // by name, the ends moved alone, so that a text that changed its
+  // components since the last bounds answer gets what it can; an end a
+  // point gave is sent exact, a fraction the server reads
+  return WNAMES.filter(n => WINDOW[n] && !WINDOW[n].flat && (WINDOW[n].lo > WINDOW[n].a || WINDOW[n].hi < WINDOW[n].b)).map(n => {
     const R = WINDOW[n];
-    if (!R || R.flat) return ',';
-    // an end a point gave is sent exact, a fraction the server reads
-    return (R.lo > R.a ? (R.loX || String(R.lo)) : '') + ',' + (R.hi < R.b ? (R.hiX || String(R.hi)) : '');
+    return `${n}=` + (R.lo > R.a ? (R.loX || String(R.lo)) : '') + ',' + (R.hi < R.b ? (R.hiX || String(R.hi)) : '');
   }).join(';');
 }
 $('time').addEventListener('change', refreshBounds);

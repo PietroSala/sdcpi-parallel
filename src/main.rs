@@ -194,6 +194,14 @@ options for pareto
                         in order, either side empty for the bound at the
                         initial state; a partial strategy that cannot land
                         inside is left at once
+  --tolerance f,...     one fraction per component, of the range of the
+                        component between its two bounds at the start: a
+                        point within these of a point found is left out,
+                        and a partial strategy that cannot leave them is
+                        closed; the frontier is then an approximation,
+                        every strategy within the tolerances of a point
+                        reported and no point reported within them of
+                        another; one-phase search alone
   --time-limit SECS     stop the exploration after this many seconds in all
                         and report the frontier found so far as partial; a
                         query never runs past the time left
@@ -238,7 +246,7 @@ pub(crate) struct Args {
 
 /// Every option some command takes: an option outside this list is a
 /// mistake, refused with its name, never ignored in silence.
-const KNOWN_OPTIONS: &[&str] = &["B", "B-file", "ablation", "anytime", "arith", "bars", "bench", "certificate", "clocks", "components", "detail", "encode-history", "epsilon", "extract", "file", "impacts", "json", "max-states", "maximize", "names", "no-exact", "obdd-library", "onephase", "oracle", "out", "pareto", "port", "precision", "print-certificate", "print-size", "print-strategy", "regenerate", "saved", "seed", "selection", "steal", "time", "time-limit", "timeout", "tooltips", "window", "workers"];
+const KNOWN_OPTIONS: &[&str] = &["B", "B-file", "ablation", "anytime", "arith", "bars", "bench", "certificate", "clocks", "components", "detail", "encode-history", "epsilon", "extract", "file", "impacts", "json", "max-states", "maximize", "names", "no-exact", "obdd-library", "onephase", "oracle", "out", "pareto", "port", "precision", "print-certificate", "print-size", "print-strategy", "regenerate", "saved", "seed", "selection", "steal", "time", "time-limit", "timeout", "tolerance", "tooltips", "window", "workers"];
 
 pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut out = Args {
@@ -891,6 +899,7 @@ impl SearchOptions {
             window: None,
             cancel: None,
             publish_open: false,
+            tolerance: Vec::new(),
             steal: self.steal,
             epsilon: self.epsilon,
             workers: self.workers,
@@ -1114,6 +1123,30 @@ fn cmd_pareto(args: &[String]) -> i32 {
             Some(out)
         }
     };
+    // the tolerances, a fraction of the range of every component, in the
+    // order of the components, the time first when it is in
+    let tolerance: Option<Vec<num_rational::BigRational>> = match args.flag("tolerance") {
+        None => None,
+        Some(t) => {
+            let mut out = Vec::new();
+            for part in t.split(',') {
+                let f = match num::parse_rational(part.trim()) {
+                    Some(f) if f >= num_rational::BigRational::from_integer(0.into()) && f <= num_rational::BigRational::from_integer(1.into()) => f,
+                    _ => return fail(&format!("--tolerance wants fractions between 0 and 1, found {part:?}")),
+                };
+                out.push(f);
+            }
+            if out.len() != tree.k {
+                return fail(&format!(
+                    "--tolerance has {} fractions, the instance has {} components{}",
+                    out.len(),
+                    tree.k,
+                    if tree.time { ", the time among them" } else { "" }
+                ));
+            }
+            Some(out)
+        }
+    };
     let extract = match args.flag("extract").map(pareto::Extract::parse) {
         None => pareto::Extract::Tightest,
         Some(Some(e)) => e,
@@ -1161,6 +1194,7 @@ fn cmd_pareto(args: &[String]) -> i32 {
             precision,
             components,
             window: directed_window(&tree, window),
+            tolerance,
             live: None,
             library,
             search: Config {
@@ -1216,6 +1250,15 @@ fn cmd_pareto(args: &[String]) -> i32 {
             })
             .collect();
         println!("window         [{}], {} points found outside it", parts.join(", "), report.outside);
+    }
+    if let (Some(f), Some(a)) = (&report.tolerance_fraction, &report.tolerance) {
+        let fr: Vec<String> = f.iter().map(|x| format!("{:.4}", pareto::approx(x))).collect();
+        let ab: Vec<String> = a.iter().map(|x| format!("{:.6}", pareto::approx(x))).collect();
+        println!(
+            "tolerance      [{}] of the range, within [{}] of a point found; every strategy is within them of a point reported",
+            fr.join(", "),
+            ab.join(", ")
+        );
     }
     let (shown_u, shown_l) = tree.shown_bounds(&report.upper, &report.lower);
     println!("U at s0        {}", dec(&shown_u));
@@ -1356,6 +1399,13 @@ fn json_report(tree: &Tree, r: &pareto::Report, elapsed: Duration, decisions: bo
     o.push_str(&format!("  \"components\": {},\n", nums(&r.components)));
     let (shown_u, shown_l) = tree.shown_bounds(&r.upper, &r.lower);
     o.push_str(&format!("  \"maximized\": {},\n", strs(&tree.maximized_names())));
+    match (&r.tolerance_fraction, &r.tolerance) {
+        (Some(f), Some(a)) => {
+            o.push_str(&format!("  \"tolerance_fraction\": {},\n", strs(f)));
+            o.push_str(&format!("  \"tolerance\": {},\n", strs(a)));
+        }
+        _ => o.push_str("  \"tolerance\": null,\n"),
+    }
     o.push_str(&format!("  \"upper\": {},\n", strs(&shown_u)));
     o.push_str(&format!("  \"lower\": {},\n", strs(&shown_l)));
     o.push_str(&format!("  \"ticks\": {},\n", strs(&r.ticks)));

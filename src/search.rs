@@ -131,6 +131,22 @@ pub trait FrontierOracle<N: Num>: Send + Sync {
     /// beat any more; an empty list when the worker holds nothing. Read by
     /// a search watched while it runs and by nothing else.
     fn open(&self, _worker: usize, _bounds: Vec<Vec<N>>) {}
+    /// Whether some budget known feasible AND within the window lies below
+    /// `v`: the test made before a budget within the window is recorded,
+    /// so that a budget found outside the window, within the tolerances
+    /// above it, does not keep a point within the window from being
+    /// recorded. Without a window it is `known`.
+    fn known_inside(&self, v: &[N]) -> bool {
+        self.known(v)
+    }
+}
+
+/// Whether a vector lies within a window, both ends included.
+fn within<N: Num>(v: &[N], w: &[(N, N)]) -> bool {
+    (0..v.len()).all(|c| {
+        N::leq(std::slice::from_ref(&w[c].0), std::slice::from_ref(&v[c]), 0.0)
+            && N::leq(std::slice::from_ref(&v[c]), std::slice::from_ref(&w[c].1), 0.0)
+    })
 }
 
 #[derive(Clone)]
@@ -179,6 +195,15 @@ pub struct Config<N: Num> {
     /// holds open, through `FrontierOracle::open`: on for a search watched
     /// while it runs, off otherwise, the publication having a cost.
     pub publish_open: bool,
+    /// The tolerances, one per component, absolute, in the orientation of
+    /// the engine, empty for none: a budget within them of a budget known
+    /// feasible is not recorded, and a node whose lower bound raised by
+    /// them is a budget known feasible is closed, its completions being
+    /// within the tolerances of a point found or worse. With them the
+    /// frontier is an approximation: every strategy is within the
+    /// tolerances of a point reported, and no point reported is within
+    /// them of another.
+    pub tolerance: Vec<N>,
 }
 
 // ---------------------------------------------------------------------------
@@ -651,6 +676,10 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
     // lower bound is read in its place
     let monotone = !store.tree.maximized.iter().any(|&m| m);
     let mut scratch = zeros::<N>(k);
+    // the sum in hand raised by the tolerances, for the two tests against
+    // the oracle
+    let mut probe = zeros::<N>(k);
+    let tolerant = !cfg.tolerance.is_empty();
     let mut local: VecDeque<CtNode<'a, N>> = VecDeque::new();
     let mut node = first;
     let mut expanded_here: u64 = 0;
@@ -775,7 +804,21 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
             // being dominated or equal.
             if cfg.ablation.accept_early() || closed {
                 node.frontier.accepting(&mut scratch);
-                if !oracle.known(&scratch) {
+                // a budget outside the window is recorded like any other,
+                // context for the page and a closer of nodes; a budget
+                // within the window is tested against the budgets within
+                // alone, so that one outside, within the tolerances above
+                // it, does not keep it from being recorded
+                let inside = match &cfg.window {
+                    Some(w) => within(&scratch, w),
+                    None => true,
+                };
+                probe.clone_from(&scratch);
+                if tolerant {
+                    crate::num::add_into(&mut probe, &cfg.tolerance);
+                }
+                let known = if inside { oracle.known_inside(&probe) } else { oracle.known(&probe) };
+                if !known {
                     oracle.add(
                         &scratch,
                         Strategy {
@@ -792,7 +835,11 @@ fn run<'a, N: Num>(shared: &Shared<'a, N>, worker: usize, first: CtNode<'a, N>, 
             } else {
                 node.frontier.accumulated(&mut scratch);
             }
-            if closed || oracle.known(&scratch) {
+            probe.clone_from(&scratch);
+            if tolerant {
+                crate::num::add_into(&mut probe, &cfg.tolerance);
+            }
+            if closed || oracle.known(&probe) {
                 match local.pop_back() {
                     Some(next) => {
                         node = next;

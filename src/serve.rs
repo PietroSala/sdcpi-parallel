@@ -1027,6 +1027,7 @@ struct Prepared {
     time: bool,
     limit: f64,
     window: Option<Vec<(Option<num_rational::BigRational>, Option<num_rational::BigRational>)>>,
+    tolerance: Option<Vec<num_rational::BigRational>>,
     opts: SearchOptions,
     workers: usize,
 }
@@ -1057,18 +1058,35 @@ fn prepare(body: &str, bench: &Bench) -> Result<Prepared, String> {
     // page asks for it: the same transform the flag --time makes
     let time = matches!(field(body, "time").as_deref(), Some("1") | Some("true"));
     let tree = directions(if time { tree.with_time() } else { tree }, body)?;
-    // the window on the expected values, `lo,hi;lo,hi;...` in the order of
-    // the components, either side empty for the bound at the initial state
-    let window = field(body, "window").filter(|w| !w.trim().is_empty()).map(|w| {
-        w.split(';')
-            .map(|part| {
-                let mut it = part.splitn(2, ',');
+    // the window on the expected values: `name=lo,hi;...` by the names of
+    // the components, a name the process does not have ignored and a
+    // component not named left open, or `lo,hi;lo,hi;...` by position, one
+    // per component; either side empty for the bound at the initial state
+    let window = match field(body, "window").filter(|w| !w.trim().is_empty()) {
+        None => None,
+        Some(w) => {
+            let mut out: Vec<(Option<num_rational::BigRational>, Option<num_rational::BigRational>)> = vec![(None, None); tree.k];
+            let parts: Vec<&str> = w.split(';').collect();
+            let named = parts.iter().any(|p| p.contains('='));
+            if !named && parts.len() != tree.k {
+                return Err(format!("{} ranges for {} components", parts.len(), tree.k));
+            }
+            for (pos, part) in parts.iter().enumerate() {
+                let (slot, range) = match part.split_once('=') {
+                    Some((n, r)) => match tree.meta.impact_names.iter().position(|m| m == n.trim()) {
+                        Some(c) => (c, r),
+                        None => continue,
+                    },
+                    None => (pos, *part),
+                };
+                let mut it = range.splitn(2, ',');
                 let lo = it.next().unwrap_or("").trim().to_string();
                 let hi = it.next().unwrap_or("").trim().to_string();
-                (num::parse_rational(&lo), num::parse_rational(&hi))
-            })
-            .collect()
-    });
+                out[slot] = (num::parse_rational(&lo), num::parse_rational(&hi));
+            }
+            Some(out)
+        }
+    };
     // a window on a maximized component is read on its negation: the two
     // ends swap and change sign
     let window = window.map(|w: Vec<(Option<num_rational::BigRational>, Option<num_rational::BigRational>)>| {
@@ -1084,6 +1102,43 @@ fn prepare(body: &str, bench: &Bench) -> Result<Prepared, String> {
             .collect::<Vec<_>>()
     });
 
+    // the tolerances, `name=f;...` by the names of the components, a name
+    // the process does not have ignored and a component not named at zero,
+    // or `f;f;...` by position; fractions of the range of every component,
+    // nothing when every one is zero
+    let tolerance: Option<Vec<num_rational::BigRational>> = match field(body, "tolerance").filter(|t| !t.trim().is_empty()) {
+        None => None,
+        Some(t) => {
+            let zero = num_rational::BigRational::from_integer(0.into());
+            let one = num_rational::BigRational::from_integer(1.into());
+            let mut out = vec![zero.clone(); tree.k];
+            let parts: Vec<&str> = t.split(';').collect();
+            let named = parts.iter().any(|p| p.contains('='));
+            if !named && parts.len() != tree.k {
+                return Err(format!("{} tolerances for {} components", parts.len(), tree.k));
+            }
+            for (pos, part) in parts.iter().enumerate() {
+                let (slot, text) = match part.split_once('=') {
+                    Some((n, f)) => match tree.meta.impact_names.iter().position(|m| m == n.trim()) {
+                        Some(c) => (c, f),
+                        None => continue,
+                    },
+                    None => (pos, *part),
+                };
+                let f = match num::parse_rational(text.trim()) {
+                    Some(f) if f >= zero && f <= one => f,
+                    _ => return Err(format!("a tolerance wants a fraction between 0 and 1, found {text:?}")),
+                };
+                out[slot] = f;
+            }
+            if out.iter().all(|f| f.numer().sign() == num_bigint::Sign::NoSign) {
+                None
+            } else {
+                Some(out)
+            }
+        }
+    };
+
     // the flags the form gives, read by the very code the command line uses,
     // so that a default is never written twice
     let flags = vec![
@@ -1094,7 +1149,7 @@ fn prepare(body: &str, bench: &Bench) -> Result<Prepared, String> {
     ];
     let args = parse_args(&flags)?;
     let opts = SearchOptions::from_args(&args)?;
-    Ok(Prepared { tree, labels, time, limit, window, opts, workers: workers_n })
+    Ok(Prepared { tree, labels, time, limit, window, tolerance, opts, workers: workers_n })
 }
 
 /// The options of the frontier search of the page, in one phase against
@@ -1118,6 +1173,7 @@ fn options(
         precision: None,
         components: None,
         window: prep.window.clone(),
+        tolerance: prep.tolerance.clone(),
         live: live.clone(),
         library: pareto::Library::Biodivine,
         search: Config {
@@ -1210,6 +1266,21 @@ fn frontier_json(prep: &Prepared, report: &pareto::Report, seconds: f64) -> Stri
         "The search finished, so every point is an optimum and the set is the whole frontier."
             .to_string()
     };
+    if let Some(a) = &report.tolerance {
+        let parts: Vec<String> = a
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.numer().sign() != num_bigint::Sign::NoSign)
+            .map(|(c, x)| {
+                let name = tree.meta.impact_names.get(c).cloned().unwrap_or_else(|| format!("impact {c}"));
+                format!("{} {name}", jnum6(pareto::approx(x)))
+            })
+            .collect();
+        note.push_str(&format!(
+            " Tolerances of {}: a point within them of a point found was left out, and every strategy is within them of a point reported.",
+            parts.join(", ")
+        ));
+    }
     if !report.points.is_empty() && report.outside > 0 {
         note.push_str(&format!(
             " {} {} found outside the bounds {} drawn grey, as context.",
@@ -1220,7 +1291,7 @@ fn frontier_json(prep: &Prepared, report: &pareto::Report, seconds: f64) -> Stri
     }
     format!(
         "{{\"status\": {}, \"seconds\": {:.6}, \"time\": {}, \"maximized\": {}, \"window\": {}, \"outside\": {}, \"components\": [{}], \"names\": [{}], \"apexes\": {}, \
-         \"expanded\": {}, \"note\": {}, \"outside_points\": {}, \"points\": [{}]}}",
+         \"expanded\": {}, \"note\": {}, \"outside_points\": {}, \"tolerance\": {}, \"points\": [{}]}}",
         esc(status),
         seconds,
         prep.time,
@@ -1246,6 +1317,13 @@ fn frontier_json(prep: &Prepared, report: &pareto::Report, seconds: f64) -> Stri
         report.search.expanded,
         esc(&note),
         outside_json(tree, &report.outside_points),
+        match &report.tolerance {
+            Some(a) => {
+                let parts: Vec<String> = a.iter().map(|x| jnum6(pareto::approx(x))).collect();
+                format!("[{}]", parts.join(", "))
+            }
+            None => "null".to_string(),
+        },
         points.join(", ")
     )
 }

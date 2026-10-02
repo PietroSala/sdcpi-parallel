@@ -687,6 +687,11 @@ pub struct Options {
     /// greatest asked, either side open: the frontier is searched among
     /// the strategies whose expected values lie within it.
     pub window: Option<Vec<(Option<BigRational>, Option<BigRational>)>>,
+    /// The tolerances, one per component, as fractions of the range of the
+    /// component between its two bounds at the initial state: a point
+    /// within them of a point found is left out, and a node that cannot
+    /// leave them is closed. The one-phase search alone reads them.
+    pub tolerance: Option<Vec<BigRational>>,
     /// Where the search shows its apexes while it runs, for a snapshot
     /// taken from another thread; the antichain oracle writes it.
     pub live: Option<Arc<Live>>,
@@ -786,6 +791,10 @@ pub struct Report {
     /// found fell outside it and were left out.
     pub window: Option<Vec<(BigRational, BigRational)>>,
     pub outside: usize,
+    /// The tolerances the search read, absolute per component, and the
+    /// fractions they were given as.
+    pub tolerance: Option<Vec<BigRational>>,
+    pub tolerance_fraction: Option<Vec<BigRational>>,
     /// The points found outside the window, set apart: never a point of
     /// the frontier, but a record of what the search found feasible, which
     /// a page may draw as context.
@@ -944,6 +953,7 @@ struct Oracle<O: Obdd> {
 }
 
 impl<O: Obdd> FrontierOracle<Exact> for Oracle<O> {
+
     fn known(&self, v: &[Exact]) -> bool {
         self.reads.fetch_add(1, Ordering::Relaxed);
         let k = self.grid.comps.len();
@@ -1014,6 +1024,10 @@ struct Antichain {
     pruned: AtomicUsize,
     sink: Option<Arc<Sink>>,
     live: Option<Arc<Live>>,
+    /// The window of the search, and the antichain of the budgets within
+    /// it, read before a budget within the window is recorded.
+    window: Option<Vec<(Exact, Exact)>>,
+    inside_set: RwLock<Vec<Vec<Exact>>>,
 }
 
 /// What a search running in the background shows while it runs: every
@@ -1061,7 +1075,25 @@ fn below(a: &[Exact], v: &[Exact]) -> bool {
     a.iter().zip(v).all(|(x, y)| x.0 <= y.0)
 }
 
+impl Antichain {
+    /// Whether a budget lies within the window, both ends included.
+    fn inside(&self, v: &[Exact]) -> bool {
+        match &self.window {
+            None => true,
+            Some(w) => (0..v.len()).all(|c| w[c].0 <= v[c] && v[c] <= w[c].1),
+        }
+    }
+}
+
 impl FrontierOracle<Exact> for Antichain {
+    fn known_inside(&self, v: &[Exact]) -> bool {
+        if self.window.is_none() {
+            return self.known(v);
+        }
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.inside_set.read().unwrap().iter().any(|a| below(a, v))
+    }
+
     fn open(&self, worker: usize, bounds: Vec<Vec<Exact>>) {
         if let Some(live) = &self.live {
             let mut open = live.open.lock().unwrap_or_else(|e| e.into_inner());
@@ -1096,6 +1128,13 @@ impl FrontierOracle<Exact> for Antichain {
             }
             set.retain(|a| !below(v, a));
             set.push(v.to_vec());
+        }
+        if self.window.is_some() && self.inside(v) {
+            let mut inside = self.inside_set.write().unwrap();
+            if !inside.iter().any(|a| below(a, v)) {
+                inside.retain(|a| !below(v, a));
+                inside.push(v.to_vec());
+            }
         }
         let k = self.grid.comps.len();
         let value: Vec<BigRational> = v.iter().map(|e| e.0.clone()).collect();
@@ -1150,6 +1189,7 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         pruned: AtomicUsize::new(0),
         sink: opts.anytime.clone(),
     });
+    let window = window_filled(&opts, &set.lower, &set.upper);
     let chain_oracle = Arc::new(Antichain {
         set: RwLock::new(Vec::new()),
         apexes: Mutex::new(Vec::new()),
@@ -1158,11 +1198,21 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         pruned: AtomicUsize::new(0),
         sink: opts.anytime.clone(),
         live: opts.live.clone(),
+        window: window.clone(),
+        inside_set: RwLock::new(Vec::new()),
     });
     let mut cfg = opts.search.clone();
     cfg.threshold = set.upper.iter().cloned().map(Exact).collect();
-    let window = window_filled(&opts, &set.lower, &set.upper);
     cfg.window = window.clone();
+    // the tolerances as the search reads them, a fraction of the range of
+    // every component between its two bounds at the initial state
+    let tolerance: Option<Vec<BigRational>> = opts.tolerance.as_ref().map(|f| {
+        f.iter()
+            .zip(set.upper.iter().zip(set.lower.iter()))
+            .map(|(f, (u, l))| f * (u - l))
+            .collect()
+    });
+    cfg.tolerance = tolerance.iter().flatten().cloned().map(Exact).collect();
     cfg.record_strategy = true;
     cfg.certificate = false;
     cfg.oracle = Some(match opts.oracle {
@@ -1304,6 +1354,8 @@ fn run_onephase<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         window: window.map(|w| w.into_iter().map(|(a, b)| (a.0, b.0)).collect()),
         outside: dropped.len(),
         outside_points: dropped,
+        tolerance,
+        tolerance_fraction: opts.tolerance.clone(),
     })
 }
 
@@ -1318,6 +1370,9 @@ fn accumulate(total: &mut Stats, st: &Stats) {
 }
 
 fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
+    if opts.tolerance.is_some() {
+        return Err("the tolerances are read by the one-phase search alone: give --onephase 1".to_string());
+    }
     let started = Instant::now();
     // The time left, if a limit is set: `None` when the limit is spent.
     let remaining = |started: &Instant| -> Option<Option<Duration>> {
@@ -1710,6 +1765,8 @@ fn run<O: Obdd>(tree: &Tree, opts: Options) -> Result<Report, String> {
         window: window.map(|w| w.into_iter().map(|(a, b)| (a.0, b.0)).collect()),
         outside: dropped.len(),
         outside_points: dropped,
+        tolerance: None,
+        tolerance_fraction: None,
     })
 }
 
