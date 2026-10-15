@@ -138,6 +138,7 @@ def scan_instance(folder: str):
     out = {
         "scalars": [],          # (conf, diag, status, first_t, end_t, search_s, tail, points_n, unmatched)
         "abs_hist": collections.Counter(),    # (conf, bin) -> n
+        "tail_hist": collections.Counter(),   # (conf, bin) -> n, tail as a fraction of the run
         "frac_hist": collections.Counter(),   # (conf, bin) -> n
         "delay_sum": collections.Counter(),   # conf -> seconds summed, and conf+"/n" -> points
         "precision": [],        # (conf, diag, candidates, on_frontier, unsound)
@@ -180,6 +181,8 @@ def scan_instance(folder: str):
                 continue
             unmatched = len(points) - len(found)
             tail = max(0.0, end_t - max(found.values())) if found else None
+            if tail is not None and end_t > 0:
+                out["tail_hist"][(conf, frac_bin(tail / end_t))] += 1
             for t in found.values():
                 delay = max(0.0, end_t - t)
                 out["abs_hist"][(conf, abs_bin(delay))] += 1
@@ -243,6 +246,7 @@ def main() -> int:
         folders = folders[: a.limit]
     scalars, precision = [], []
     abs_hist = collections.Counter()
+    tail_hist = collections.Counter()
     frac_hist = collections.Counter()
     delay_sum = collections.Counter()
     builds = collections.Counter()
@@ -258,6 +262,7 @@ def main() -> int:
             scalars.extend(r["scalars"])
             precision.extend(r["precision"])
             abs_hist.update(r["abs_hist"])
+            tail_hist.update(r["tail_hist"])
             frac_hist.update(r["frac_hist"])
             delay_sum.update(r["delay_sum"])
             builds.update(r["builds"])
@@ -284,6 +289,7 @@ def main() -> int:
             "points_counted": delay_sum[conf + "/n"],
             "delay_hist_abs": [abs_hist[(conf, b)] for b in range(ABS_BINS)],
             "delay_hist_frac": [frac_hist[(conf, b)] for b in range(FRAC_BINS)],
+            "tail_hist_frac": [tail_hist[(conf, b)] for b in range(FRAC_BINS)],
         }
         by_conf[conf] = d
 
