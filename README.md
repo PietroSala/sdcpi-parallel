@@ -11,7 +11,7 @@ checker and with three ablated configurations of its own search,
 rebuildable from nothing, its own `README.md` walking the stages; the
 library asks nothing of the scripts, and the scripts ask only the built
 library. The recorded reference campaign ships as a split archive that
-`setup.py` unpacks; the repository is private for now.
+`setup.py` unpacks.
 
 **Strategy Determination for BPMN+CPI**, a command-line tool. Given a business
 process with decisions, chance and multi-dimensional costs, it answers one
@@ -77,6 +77,48 @@ Stop cuts the search, which then answers as at its time limit, with what it
 found and the certificate of the cut. A search started while one runs cuts
 the one before.
 
+## The panels of the page
+
+The page is a graphical wrapper of the command line: each panel drives one
+command with the same options, and what a panel draws is what the command
+prints. The six panels, from the objective function to the results, with the
+command that replicates each of them on `examples/line.cpi`.
+
+**1. The objective function.** One two-way switch per component is
+`--maximize`, by name or index; the switch "Expected time", on by default on
+the page, is `--time 1`, off by default on the command line.
+
+    sdcpi pareto line.yaml --time 1 --maximize hours
+
+**2. The process editor.** The editor takes the textual notation of the
+grammar below and draws the diagram; on the command line the same notation
+is parsed into an instance file.
+
+    sdcpi parse --file examples/line.cpi --out line.yaml
+
+**3. The display controls.** The controls of the diagram are the options of
+`to_svg`: the names and the clocks of the tasks, and the impacts drawn as
+bars.
+
+    sdcpi to_svg line.yaml --names true --clocks true --bars kwh,hours --out line.svg
+
+**4. The search.** The bounds on the expected values are `--window` and the
+tolerances are `--tolerance`, one entry per component, the time first when
+it is in; the table of the options below reads both in full.
+
+    sdcpi pareto line.yaml --time 1 --window '..80,..,..' --tolerance 0.05,0,0
+
+**5. The computation.** The workers, the prunings kept and the time limit;
+the button "Compute the frontier" is the run itself.
+
+    sdcpi pareto line.yaml --workers 4 --ablation both --time-limit 30
+
+**6. The results.** What the plot and the table draw is what `pareto`
+prints: every point with its exact value and, with `--print-strategy 1`, the
+strategy that attains it; a run stopped by the time limit prints the
+candidates it holds, the final ones marked.
+
+    sdcpi pareto line.yaml --print-size 1 --print-strategy 1
 
 ## The model
 
@@ -270,10 +312,14 @@ confrontation to the whole campaign.
 
 ## Commands
 
-The core of the tool is `determine`; `info`, `bound` and `optima` are its
-companions for exploring an instance.
+The frontier is `pareto` and the budget question is `determine`; `info`,
+`bound` and `optima` are their companions for exploring an instance.
 
 ```
+sdcpi pareto    <instance> [options]         the Pareto frontier of the expected
+                                             impacts over pure strategies, a
+                                             witnessing strategy for every point
+
 sdcpi determine <instance> (--B a,b,... | --B-file F) [options]
                                              is there a strategy whose expected
                                              impact fits the budget, and which one
@@ -303,7 +349,7 @@ sdcpi optima  <instance>                     the exact least and greatest expect
                                              situation and may hit --max-states
 ```
 
-## Options of `determine`
+## Options of `determine` and `pareto`
 
 | option | meaning |
 |---|---|
