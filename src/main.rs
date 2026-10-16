@@ -206,22 +206,23 @@ options for pareto
                         and report the frontier found so far as partial; a
                         query never runs past the time left
   --json F              write the report to F as JSON as well
-  --anytime F           with --onephase, append every apex to F as it is
+  --anytime F           in one phase, append every apex to F as it is
                         recorded, one JSON object per line, with the second it
                         was recorded at counted from the start of the process,
                         flushed as it is written so that a run killed at any
                         moment leaves on disk what it had found; the last line
                         says the search ended, and its absence says the run was
                         killed
-  --onephase 1          the frontier in one phase: one search of the whole
-                        tree, work stealing included, against a shared
-                        diagram of the budgets known feasible. A node
-                        whose lower bound is a budget known feasible is
-                        closed, every completion being dominated or equal;
-                        an upper bound not known feasible is recorded with
-                        its partial strategy and the node goes on. The
-                        readers run at once, a recording waits for them.
-                        --extract and --certificate are not read
+  --onephase 0|1        1, the default: the frontier in one phase, one
+                        search of the whole tree, work stealing included,
+                        against a shared diagram of the budgets known
+                        feasible. A node whose lower bound is a budget known
+                        feasible is closed, every completion being dominated
+                        or equal; an upper bound not known feasible is
+                        recorded with its partial strategy and the node goes
+                        on. The readers run at once, a recording waits for
+                        them. --extract and --certificate are not read.
+                        0 rebuilds the frontier from threshold queries
   --oracle KIND         antichain | obdd                  (default antichain)
                         what holds the budgets known feasible in one phase:
                         the antichain of the apexes, one scan per test, or
@@ -1164,7 +1165,9 @@ fn cmd_pareto(args: &[String]) -> i32 {
             _ => return fail(&format!("--time-limit wants a positive number of seconds, found {t:?}")),
         },
     };
-    let onephase = args.flag("onephase").is_some();
+    // One phase is the default since 2026-10-16; --onephase 0 asks for the
+    // reconstruction from threshold queries.
+    let onephase = args.flag("onephase").map_or(true, |v| v != "0");
     let anytime = match args.flag("anytime") {
         None => None,
         Some(_) if !onephase => {
