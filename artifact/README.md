@@ -19,15 +19,19 @@ the artifact image saved to a file. The repository is public at
 
 Of the two formats of the call, this artifact is a **Docker image**. It
 needs Docker (any recent version; the image is built for amd64 and arm64,
-the machine of the campaign and of the evaluation being amd64), about 3 GB
+the machine of the campaign and of the evaluation being amd64), about 7 GB
 of disk for the image, and nothing else: no network is needed after the
 image is loaded. The full replication reads the two archives of the records,
-7.2 GB zipped, and extracts up to 25 GB beside them.
+7.2 GB zipped, and extracts 11 GB beside them. The analysis of the
+replication holds every record in memory and peaks at 18 GB: give the
+container 20 GB or more, and when Docker runs inside a virtual machine, as
+it does on macOS and on Windows, give that memory to the virtual machine in
+the settings of Docker.
 
 The image is loaded from the file in the Zenodo record, or rebuilt from the
 repository; the two are the same image.
 
-    docker load -i sdcpi-tacas27-image.tar.gz
+    docker load -i sdcpi-tacas27-image-amd64.tar.gz
     # or, from the root of the repository, with network:
     docker build --platform linux/amd64 -f artifact/Dockerfile -t sdcpi-tacas27 .
 
@@ -35,7 +39,7 @@ The base of the image is `movesrwth/storm:1.13.0`, the version of Storm the
 campaign ran; on top of it the image carries the Rust toolchain that builds
 `sdcpi` and the Python that runs the analysis and the figures.
 
-## Smoke test, about ten minutes
+## Smoke test, a few minutes
 
     docker run --rm sdcpi-tacas27 artifact/smoke.sh
 
@@ -48,7 +52,7 @@ grid with the seed of the campaign and the tool computes its frontier; the
 figures and the tables of the paper are rendered from the reference data
 shipped in `artifact/data-paper`. The last line is `SMOKE TEST PASSED`.
 
-## Replication of the evaluation, about an hour
+## Replication of the evaluation, about a quarter of an hour
 
 The raw records are in the two archives of the Zenodo record, beside this
 repository:
@@ -66,11 +70,12 @@ themselves. With the folder that holds the two archives mounted at
     docker run --rm -v <folder with the two zips>:/records \
         sdcpi-tacas27 artifact/replicate.sh /records
 
-The script extracts the records, runs
-`scripts/pareto-frontier/analysis.py`, the one pass that wrote the data of
-the paper, and compares every file it writes with the reference copy in
-`artifact/data-paper`: byte for byte, except the field `generated_from` of
-`analysis.json`, which names the folder read. It then renders the figures
+The script checks the archives against `SHA256SUMS`, extracts the records,
+runs `scripts/pareto-frontier/analysis.py`, the one pass over the 181 440
+runs of the tool and the 11 340 of Storm that wrote the data of the paper,
+about a minute of computation, and compares every file it writes with the
+reference copy in `artifact/data-paper`: byte for byte, except the field
+`generated_from` of `analysis.json`, which names the folder read. It then renders the figures
 (`scripts/figures/`) and the tables (`scripts/tables/`) of the experimental
 section. The last line is `REPLICATION PASSED`.
 
@@ -116,7 +121,7 @@ machine.
 
 The tool, the scripts and this artifact are under the MIT license
 (`LICENSE`, a copy of the one at the root of the repository). The image was
-built and the smoke test and the replication were run on: macOS 26 (arm64,
-Docker 29.1), and the same image built for linux/amd64 under emulation.
-<!-- Update the platform list after the amd64 run; add a Linux host if one
-is available before submission. -->
+built for both architectures on macOS 26 with Docker 29.1, and the smoke
+test passes on both, arm64 natively and linux/amd64 under emulation. The
+replication was run to its last line on the arm64 image, every comparison
+exact, in about a quarter of an hour.
