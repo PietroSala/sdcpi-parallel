@@ -13,8 +13,8 @@ the campaign, beside the archives.
 | `sdcpi-tacas-results-tool.zip` | 7.2 GB | the instances and the 181 440 runs of the tool, README and manifest inside |
 | `sdcpi-tacas-results-prism-storm.zip` | 101 MB | the PRISM models, the queries and the runs of Storm 1.13.0, README and manifest inside |
 | `SHA256SUMS` | 197 B | the checksums of the two archives |
-| `sdcpi-tacas27-image-amd64.tar.gz` | about 2.5 GB | the artifact image for linux/amd64, `docker load` restores it as `sdcpi-tacas27` |
-| `sdcpi-parallel-<commit>.zip` | about 150 MB | the snapshot of the repository the image is built from, `git archive` of the commit named inside |
+| `sdcpi-tacas27-image-amd64.tar.gz` | 1.6 GB | the artifact image for linux/amd64, `docker load` restores it as `sdcpi-tacas27` |
+| `sdcpi-parallel-<commit>.zip` | 117 MB | the snapshot of the repository the image is built from, `git archive` of the commit named inside |
 | `README.md` | | a copy of `artifact/README.md`, so the record reads on its own |
 | `LICENSE` | | MIT |
 
