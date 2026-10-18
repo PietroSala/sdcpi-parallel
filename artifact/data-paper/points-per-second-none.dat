@@ -1,0 +1,6 @@
+# points a second of the ablation none, over every run recorded: the total found over the total of the time the tool reports for itself. The first column of rates carries the cut runs, whose points are candidates; the second is read on the complete runs alone
+# workers per_second per_second_complete_runs runs truncated
+1 66.3951 228.391 11340 163
+2 75.7428 295.944 11340 147
+4 81.8677 307.966 11340 144
+8 86.3245 315.97 11340 143

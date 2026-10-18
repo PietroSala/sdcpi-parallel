@@ -1,0 +1,21 @@
+% written by analysis.py, do not edit
+\begin{table}[htbp]
+\centering
+\caption{Storm against \texttt{onephase-both-w1}, one core each, on the population of the 11340 instances that carry a record of Storm, which are the diagonals Storm has reached and no other. The budget is 120 seconds and a column marked ok counts the runs that closed within it. The ratio is the wall clock of Storm over ours, read on the 6862 instances where both closed; the 156 runs of ours that the budget cut hold candidate points and enter no ratio. The column of the same frontiers counts the instances where the two are the same set, ours projected on the objectives of Storm and compared in exact rational arithmetic, out of those where the comparison could be made. On the 482 instances where the two differ, ours holds the frontier of Storm and more on 471 of them and covers it, every point of Storm being dominated by one of ours, on 11 more; the reverse holds on 0 and neither on 0.}
+\label{tab:storm}
+\small
+\begin{tabular}{lrrrrrrrc}
+\toprule
+diag. & instances & Storm ok & ours ok & both ok & $q_1$ & median & $q_3$ & same \\
+\midrule
+2 & 540 & 538 & 540 & 538 & 48.48 & 71.88 & 132.06 & 538/538 \\
+3 & 1\,080 & 961 & 1\,080 & 961 & 66.86 & 114.05 & 266.79 & 955/961 \\
+4 & 1\,620 & 1\,236 & 1\,620 & 1\,236 & 88.54 & 156.76 & 335.17 & 1194/1236 \\
+5 & 2\,160 & 1\,310 & 2\,160 & 1\,310 & 126.27 & 263.40 & 747.90 & 1205/1310 \\
+6 & 2\,700 & 1\,407 & 2\,694 & 1\,405 & 135.74 & 298.80 & 763.11 & 1248/1405 \\
+7 & 3\,240 & 1\,419 & 3\,090 & 1\,412 & 143.83 & 365.96 & 959.69 & 1240/1412 \\
+\midrule
+\textbf{all} & 11\,340 & 6\,871 & 11\,184 & 6\,862 & 94.24 & 202.38 & 612.20 & 6380/6862 \\
+\bottomrule
+\end{tabular}
+\end{table}
