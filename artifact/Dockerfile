@@ -1,14 +1,19 @@
 # The artifact image of the TACAS 2027 submission 5092, "A Parallel
-# Algorithm for Strategy Synthesis in CPI": the tool sdcpi built from this
-# repository, Storm 1.13.0 as the campaign ran it, and the Python of the
-# analysis and of the figures. Build from the root of the repository:
+# Algorithm for Strategy Synthesis in BPMN+CPI": the tool sdcpi built from
+# this repository, Storm 1.13.0, the version the campaign ran (here the Linux
+# build of movesrwth/storm; the campaign ran the build of Homebrew on macOS),
+# and the Python of the analysis and of the figures. Build from the root of
+# the repository:
 #
 #     docker build -f artifact/Dockerfile -t sdcpi-tacas27 .
 #
-# The base image carries both architectures and the build takes the one of
-# the machine; --platform linux/amd64 or linux/arm64 asks for the other. The
-# record of the artifact carries the image of each, built in this way.
-FROM movesrwth/storm:1.13.0
+# The base image carries both architectures, pinned by the digest of its
+# index, and the build takes the one of the machine; --platform linux/amd64
+# or linux/arm64 asks for the other. The record of the artifact carries the
+# image of each, built in this way. The Ubuntu packages below are those that
+# the archive of Ubuntu 25.10, the release of the base image, serves at
+# build time.
+FROM movesrwth/storm:1.13.0@sha256:ddfa56c03be9bbaf714fe9de44835b2cf2af3324b33bcaad6d09f8314253cfda
 
 # The toolchains: Rust for the tool, Python for the scripts of the
 # analysis and of the figures, unzip and rsync for the archives of the

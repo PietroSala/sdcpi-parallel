@@ -7,23 +7,35 @@
 The rerun is the folder that `run.py --experiment` wrote on a slice of the
 grid, with its `instances/`, `models/` and `results/`; the three other
 folders are the same slice extracted from the two archives of the campaign,
-the records of Storm merged into the results of the tool. For every
-instance of the rerun:
+the records of Storm merged into the results of the tool. Every instance of
+the slice, in the rerun or in the records, is checked:
 
   * the instance the generator wrote must be the one of the records, byte
     for byte, and so must the PRISM model and the query that Storm read;
-  * a run complete in the rerun and in the records must give the same
-    frontier, the same set of vectors read as exact rationals, for every
-    configuration of ours and for Storm alike;
-  * every other pair of statuses is counted and not judged: the budget cuts
-    where the speed of the machine puts it, and a run that closed a little
-    under the budget in the campaign may be cut here, or the reverse.
+  * a run of ours complete in the rerun and in the records must give the
+    same frontier, the same set of vectors read as exact rationals, for
+    every configuration;
+  * wherever Storm completes in the rerun, its set must lie on the frontier
+    of ours or above it, on the objectives Storm was asked for, as the paper
+    finds on every instance; the frontier of ours is the baseline of the
+    rerun, or of the records when the rerun cut it, the two being equal
+    wherever both complete. A set of Storm that differs from the one it
+    recorded is counted and named, not judged: the image carries the Linux
+    build of Storm 1.13.0 and the campaign ran the build of Homebrew on
+    macOS, and where the search of Storm over the pure strategies misses
+    points of the frontier the two builds can miss different ones;
+  * a run that the budget cut, on either side, is counted and not judged:
+    the budget cuts where the speed of the machine puts it, and a run that
+    closed a little under the budget in the campaign may be cut here, or the
+    reverse. A run that failed in the rerun, a process that died before the
+    budget among them, is a problem.
 
 Then the comparison with Storm and the ablation study of the paper on the
 slice, computed by `analysis.py` from the rerun and from the records, side
 by side. The last line is `RERUN AGREES WITH THE RECORDS`, and the exit
-status is not zero when an instance, a model or a frontier differs, or when
-a run of the slice has no record in the rerun.
+status is not zero when an instance, a model, a query or a frontier of ours
+differs, when Storm finds what ours lacks, when a run failed, or when a run
+of the slice has no record on one side.
 """
 
 from __future__ import annotations
@@ -40,6 +52,7 @@ import analysis
 RECORD_SUFFIX = analysis.RECORD_SUFFIX
 STORM = analysis.STORM_CONF
 COMPLETE = analysis.COMPLETE
+VALID = ("same", "ours_superset", "ours_dominates")
 
 
 def frontier(conf: str, rec: dict) -> frozenset:
@@ -66,27 +79,61 @@ def query_of(storm: dict | None) -> str | None:
     return command[command.index("--prop") + 1] if "--prop" in command else None
 
 
+def cut_by_budget(tool: str, rec: dict) -> bool:
+    """Whether a run that did not complete was stopped by the budget, and not
+    by a failure. Storm is killed at the budget and recorded as a timeout. A
+    run of ours is killed past the budget, or ends on its own past it, and is
+    recorded as truncated either way; a process that died before the budget
+    leaves a buffer that reads as truncated too, with neither mark."""
+    status = rec.get("status")
+    if tool == "storm":
+        return status == "timeout"
+    if status == "killed":
+        return True
+    return status == "truncated" and (bool(rec.get("killed")) or rec.get("end_status") == COMPLETE)
+
+
+def complete_run(recs: dict[str, dict], baseline: str) -> dict | None:
+    """A complete run of ours among the records of one instance: the
+    baseline, or else any configuration that completed."""
+    first = recs.get(baseline)
+    if first and first.get("status") == COMPLETE:
+        return first
+    for conf in sorted(recs):
+        if conf != STORM and recs[conf].get("status") == COMPLETE:
+            return recs[conf]
+    return None
+
+
 def compare_files(rerun: Path, instances: Path, models: Path,
                   records: Path) -> tuple[dict, list[str]]:
     """The instances, the models and the queries of the rerun against those
-    of the records."""
+    of the records, over the files of both sides."""
     counts = collections.Counter()
     bad = []
-    for mine in sorted((rerun / "instances").rglob("*.yaml")):
-        rel = mine.relative_to(rerun / "instances")
-        same = same_bytes(mine, instances / rel)
+    mine_root = rerun / "instances"
+    rels = sorted({p.relative_to(mine_root) for p in mine_root.rglob("*.yaml")}
+                  | {p.relative_to(instances) for p in instances.rglob("*.yaml")})
+    for rel in rels:
+        same = same_bytes(mine_root / rel, instances / rel)
         counts["instances"] += 1
         counts["instances_same" if same else "instances_differ"] += 1
         if not same:
-            bad.append(f"instance {rel}: " + ("not in the records" if same is None else "differs"))
-    for mine in sorted((rerun / "models").glob("*.prism")):
+            where = ("not in the rerun" if not (mine_root / rel).exists()
+                     else "not in the records" if same is None else "differs")
+            bad.append(f"instance {rel}: {where}")
+    stems = sorted({p.stem for p in (rerun / "models").glob("*.prism")}
+                   | {p.stem for p in models.glob("*.prism")})
+    for stem in stems:
+        mine = rerun / "models" / f"{stem}.prism"
         counts["models"] += 1
         same = same_bytes(mine, models / mine.name)
         counts["models_same" if same else "models_differ"] += 1
         if not same:
-            bad.append(f"model {mine.stem}: " + ("not in the records" if same is None
-                                                 else "differs from the one Storm read"))
-        theirs = query_of(analysis.load(str(records / mine.stem / (STORM + RECORD_SUFFIX))))
+            where = ("not in the rerun" if not mine.exists()
+                     else "not in the records" if same is None else "differs from the one Storm read")
+            bad.append(f"model {stem}: {where}")
+        theirs = query_of(analysis.load(str(records / stem / (STORM + RECORD_SUFFIX))))
         if theirs is None:
             continue
         ours = mine.with_suffix(".prop")
@@ -94,44 +141,81 @@ def compare_files(rerun: Path, instances: Path, models: Path,
         if ours.exists() and ours.read_text().strip() == theirs:
             counts["queries_same"] += 1
         else:
-            bad.append(f"query {mine.stem}: differs from the one Storm was asked")
+            bad.append(f"query {stem}: differs from the one Storm was asked")
     return dict(counts), bad
 
 
-def compare_runs(rerun: Path, records: Path) -> tuple[dict, list[str]]:
-    """Every run of the rerun against the record of the same run."""
+def confs_of(folder: Path) -> list[str]:
+    """The configurations recorded in one instance folder."""
+    names = {f.name[: -len(RECORD_SUFFIX)] for f in folder.glob("*" + RECORD_SUFFIX)}
+    return sorted(c for c in names if c == STORM or analysis.parse_conf(c))
+
+
+def compare_runs(rerun: Path, records: Path, baseline: str) -> tuple[dict, list[str]]:
+    """Every run of the slice against the record of the same run, and every
+    set of Storm in the rerun against the frontier of ours."""
     pairs = {"ours": collections.Counter(), "storm": collections.Counter()}
     seconds = {"ours": [0.0, 0.0], "storm": [0.0, 0.0]}
+    other_sets = []
     bad = []
-    for folder in sorted(p for p in (rerun / "results").iterdir() if p.is_dir()):
-        if analysis.parse_key(folder.name) is None:
-            continue
-        theirs_folder = records / folder.name
-        confs = sorted({f.name[: -len(RECORD_SUFFIX)] for f in theirs_folder.glob("*" + RECORD_SUFFIX)
-                        if f.name[: -len(RECORD_SUFFIX)] == STORM
-                        or analysis.parse_conf(f.name[: -len(RECORD_SUFFIX)])})
+    keys = sorted({p.name for p in (rerun / "results").iterdir()
+                   if p.is_dir() and analysis.parse_key(p.name)}
+                  | {p.name for p in records.iterdir() if p.is_dir() and analysis.parse_key(p.name)})
+    for key in keys:
+        confs = confs_of(records / key)
         if not confs:
-            bad.append(f"{folder.name}: no record of the campaign")
+            bad.append(f"{key}: no record of the campaign")
             continue
+        mine_of, theirs_of = {}, {}
         for conf in confs:
             tool = "storm" if conf == STORM else "ours"
-            theirs = analysis.load(str(theirs_folder / (conf + RECORD_SUFFIX)))
-            mine = analysis.load(str(folder / (conf + RECORD_SUFFIX)))
+            theirs = analysis.load(str(records / key / (conf + RECORD_SUFFIX)))
+            if theirs is None:
+                bad.append(f"{key} {conf}: the record of the campaign cannot be read")
+                continue
+            mine = analysis.load(str(rerun / "results" / key / (conf + RECORD_SUFFIX)))
             if mine is None:
                 pairs[tool]["missing"] += 1
-                bad.append(f"{folder.name} {conf}: no record in the rerun")
+                bad.append(f"{key} {conf}: no record in the rerun")
                 continue
+            mine_of[conf], theirs_of[conf] = mine, theirs
             a, b = mine.get("status", "failed"), theirs.get("status", "failed")
             pairs[tool][f"{a}/{b}"] += 1
             seconds[tool][0] += analysis.wall_of(mine) or 0.0
             seconds[tool][1] += analysis.wall_of(theirs) or 0.0
+            if a != COMPLETE and not cut_by_budget(tool, mine):
+                bad.append(f"{key} {conf}: {a} here, not a cut of the budget")
             if a == COMPLETE and b == COMPLETE:
-                if frontier(conf, mine) == frontier(conf, theirs):
-                    pairs[tool]["same_frontier"] += 1
-                else:
-                    pairs[tool]["other_frontier"] += 1
-                    bad.append(f"{folder.name} {conf}: the frontier differs from the record")
-    return {"pairs": {k: dict(v) for k, v in pairs.items()}, "seconds": seconds}, bad
+                same = frontier(conf, mine) == frontier(conf, theirs)
+                pairs[tool]["same_frontier" if same else "other_frontier"] += 1
+                if not same and tool == "ours":
+                    bad.append(f"{key} {conf}: the frontier differs from the record")
+        storm = mine_of.get(STORM)
+        if not storm or storm.get("status") != COMPLETE:
+            continue
+        points = storm.get("points") or []
+        if not points or len(points) != storm.get("points_found", len(points)):
+            bad.append(f"{key} storm: complete with {len(points)} points read of "
+                       f"{storm.get('points_found')} found")
+        ours = complete_run(mine_of, baseline) or complete_run(theirs_of, baseline)
+        if ours is None:
+            verdict = "not judged"      # no run of ours completed: the exact check reads these
+        else:
+            verdict = analysis.compare_frontiers(ours, storm) or "not comparable"
+            if verdict not in VALID:
+                bad.append(f"{key} storm: {verdict} against the frontier of ours")
+        pairs["storm"][f"verdict:{verdict}"] += 1
+        recorded = theirs_of.get(STORM)
+        if (recorded and recorded.get("status") == COMPLETE
+                and frontier(STORM, storm) != frontier(STORM, recorded)):
+            theirs_ours = complete_run(theirs_of, baseline)
+            other_sets.append({
+                "instance": key, "points_here": len(points), "verdict_here": verdict,
+                "points_records": len(recorded.get("points") or []),
+                "verdict_records": (analysis.compare_frontiers(theirs_ours, recorded)
+                                    if theirs_ours else None) or "not compared"})
+    return {"pairs": {k: dict(v) for k, v in pairs.items()}, "seconds": seconds,
+            "storm_other_sets": other_sets}, bad
 
 
 def tables(results: Path, baseline: str) -> dict:
@@ -168,13 +252,15 @@ def main() -> int:
     p.add_argument("--baseline", default="onephase-both-w1")
     p.add_argument("--out", type=Path, default=None, help="the report, as JSON")
     a = p.parse_args()
+    if not analysis.parse_conf(a.baseline):
+        p.error(f"no configuration {a.baseline}: onephase-<ablation>-w<workers>")
 
     files, bad_files = compare_files(a.rerun, a.instances, a.models, a.results)
-    runs, bad_runs = compare_runs(a.rerun, a.results)
+    runs, bad_runs = compare_runs(a.rerun, a.results, a.baseline)
     here, there = tables(a.rerun / "results", a.baseline), tables(a.results, a.baseline)
 
-    print(f"instances: {files.get('instances', 0)} written by the generator, "
-          f"{files.get('instances_same', 0)} the same as in the records")
+    print(f"instances: {files.get('instances', 0)} in the slice, "
+          f"{files.get('instances_same', 0)} written by the generator as in the records")
     print(f"models: {files.get('models', 0)} PRISM models, "
           f"{files.get('models_same', 0)} the same as Storm read in the campaign; "
           f"{files.get('queries', 0)} queries, {files.get('queries_same', 0)} the same "
@@ -184,11 +270,25 @@ def main() -> int:
         total = sum(v for k, v in c.items() if "/" in k)
         both = c.get(f"{COMPLETE}/{COMPLETE}", 0)
         print(f"{tool}: {total} runs, complete here and in the records {both}, "
-              f"the same frontier on {c.get('same_frontier', 0)} of them")
+              f"the same {'frontier' if tool == 'ours' else 'set of points'} on "
+              f"{c.get('same_frontier', 0)} of them")
+        if tool == "storm":
+            for o in runs["storm_other_sets"]:
+                print(f"    another set on {o['instance']}: {o['points_here']} points here, "
+                      f"{o['verdict_here']} against ours, {o['points_records']} in the records, "
+                      f"{o['verdict_records']}")
         others = {k: v for k, v in c.items() if "/" in k and k != f"{COMPLETE}/{COMPLETE}"}
         for k, v in sorted(others.items()):
             mine, theirs = k.split("/")
             print(f"    {v} {mine} here and {theirs} in the records")
+        if tool == "storm":
+            judged = {k.split(":", 1)[1]: v for k, v in c.items() if k.startswith("verdict:")}
+            held = sum(v for k, v in judged.items() if k in VALID)
+            unjudged = judged.pop("not judged", 0)
+            print(f"    on or above the frontier of ours wherever Storm completes here: "
+                  f"{held} of {sum(judged.values())} "
+                  f"({', '.join(f'{k} {v}' for k, v in sorted(judged.items()))})"
+                  + (f"; {unjudged} not judged, no run of ours complete" if unjudged else ""))
         here_s, there_s = runs["seconds"][tool]
         print(f"    wall clock of the runs: {here_s / 3600:.2f} h here, "
               f"{there_s / 3600:.2f} h in the campaign")
@@ -217,7 +317,7 @@ def main() -> int:
               f"{pair(h.get('apexes_per_second'), t.get('apexes_per_second'), '{:.0f}'):>19}")
     print("The times and the rates are those of the machine at hand and are not "
           "compared; the counts of runs closed within the budget follow the speed "
-          "of the machine, the frontiers do not.")
+          "of the machine, the frontiers of ours do not.")
 
     bad = bad_files + bad_runs
     if a.out:

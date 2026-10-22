@@ -17,14 +17,21 @@
 #         sdcpi-tacas27 artifact/dp-check.sh /records [budget] [procs]
 #
 # The budget is per instance and defaults to the 120 seconds of the paper;
-# the extraction is selective, the records of the baseline and of Storm with
+# the processes default to one a core, at most four, since a process that
+# shares its core with another is slowed against a budget of wall clock.
+# The extraction is selective, the records of the baseline and of Storm with
 # the models, 1.2 GB. Any disagreement stops the script.
 set -e
 cd "$(dirname "$0")/.."
 
 RECORDS="${1:-/records}"
 BUDGET="${2:-120}"
-PROCS="${3:-4}"
+if [ -n "${3:-}" ]; then
+    PROCS=$3
+else
+    CORES=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
+    PROCS=$(( CORES < 4 ? CORES : 4 ))
+fi
 TOOLZIP="$RECORDS/sdcpi-tacas-results-tool.zip"
 STORMZIP="$RECORDS/sdcpi-tacas-results-prism-storm.zip"
 OUT=artifact/out

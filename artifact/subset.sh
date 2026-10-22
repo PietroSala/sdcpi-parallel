@@ -1,6 +1,6 @@
 #!/bin/sh
-# The representative subset of the evaluation, about five hours and a half
-# on one core: the campaign itself, run again by its own driver on a slice of
+# The representative subset of the evaluation, about five hours on one
+# core: the campaign itself, run again by its own driver on a slice of
 # the grid, and every run set against the record the campaign left. It runs
 # inside the artifact image, with the folder holding the two archives
 # mounted:
@@ -14,19 +14,25 @@
 # configurations of ours, 9180 runs with the budget of 120 seconds of the
 # paper. Storm takes almost all of the time: 4.9 hours on the machine of the
 # campaign, of which 4.6 are its 138 runs that the budget cuts, while ours
-# closes all of its 8640 runs of the slice in half a minute in all. The last
+# closes all of its 8640 runs of the slice in half a minute in all; in the
+# virtual machine of TACAS 2027 for arm64 the subset took 4.9 hours. The last
 # diagonal and the processes are arguments: `subset.sh /records 2` is a
 # taste of a few minutes, `subset.sh /records 7 2` the second process up to
-# the last diagonal of the paper, half a day.
+# the last diagonal of the paper, about seventeen hours on the machine of the
+# campaign, fifteen of them Storm.
 #
 # The driver regenerates every instance from the seed of the campaign and
 # exports every model, as the campaign did. The instances, the models and the
-# queries must be those of the records byte for byte, and every run complete
-# here and in the records must give the same frontier, exactly; a run that
-# the budget cut on one side only is counted and not judged. The driver keeps
-# every record it writes and resumes where it stopped, so a run interrupted
-# is taken up again by the same command when artifact/out is a mounted
-# folder. Any failure stops the script.
+# queries must be those of the records byte for byte, every run of ours
+# complete here and in the records must give the same frontier, exactly, and
+# wherever Storm completes its set must lie on the frontier of ours or above
+# it; a run that the budget cut on one side only is counted and not judged,
+# and so is a set of Storm other than the recorded one, the Storm of the
+# image being the Linux build of 1.13.0 and that of the campaign the build
+# of Homebrew on macOS. The driver keeps every record it writes and resumes
+# where it stopped, so a run interrupted is taken up again by the same
+# command when artifact/out is a mounted folder. Any failure stops the
+# script.
 set -e
 cd "$(dirname "$0")/.."
 

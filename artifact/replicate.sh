@@ -86,5 +86,6 @@ mkdir -p scripts/data
 cp "$OUT"/data/* scripts/data/
 python3 scripts/pareto-frontier/make_figures.py
 ls scripts/figures scripts/tables
+cp -r scripts/figures scripts/tables "$OUT"/
 
 echo "REPLICATION PASSED"

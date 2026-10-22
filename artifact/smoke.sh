@@ -72,5 +72,7 @@ mkdir -p scripts/data
 cp artifact/data-paper/* scripts/data/
 python3 scripts/pareto-frontier/make_figures.py
 ls scripts/figures scripts/tables
+mkdir -p artifact/out
+cp -r scripts/figures scripts/tables artifact/out/
 
 echo "SMOKE TEST PASSED"
