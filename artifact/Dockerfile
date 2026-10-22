@@ -5,10 +5,9 @@
 #
 #     docker build -f artifact/Dockerfile -t sdcpi-tacas27 .
 #
-# The base image carries both architectures; the machine of the campaign
-# and of the evaluation is amd64, so the reference build is
-#
-#     docker build --platform linux/amd64 -f artifact/Dockerfile -t sdcpi-tacas27 .
+# The base image carries both architectures and the build takes the one of
+# the machine; --platform linux/amd64 or linux/arm64 asks for the other. The
+# record of the artifact carries the image of each, built in this way.
 FROM movesrwth/storm:1.13.0
 
 # The toolchains: Rust for the tool, Python for the scripts of the
@@ -42,9 +41,14 @@ RUN python3 -m venv /opt/venv \
     && ln -s /usr/local/bin/chromium /usr/local/bin/google-chrome \
     && chromium --version
 
-# The repository, and the tool built from it.
+# The repository, and the tool built from it. The generator of the
+# benchmark reads process-impact-benchmarks at the commit the campaign
+# pinned: a checkout that does not carry it, as a snapshot of the
+# repository does not, clones it here, and the pin is checked either way.
 COPY . /artifact/sdcpi-parallel
 WORKDIR /artifact/sdcpi-parallel
+RUN cd scripts/storm-comparison-ablation \
+    && python3 -c 'import setup, sys; sys.exit(setup.fetch_benchmark())'
 RUN cargo build --release \
     && install -m 0755 target/release/sdcpi /usr/local/bin/sdcpi
 
