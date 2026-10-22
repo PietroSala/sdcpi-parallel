@@ -4,6 +4,7 @@
     analysis.py                       everything, into the paper data folder
     analysis.py --out /tmp/x          somewhere else
     analysis.py --baseline onephase-both-w2
+    analysis.py --archives tool.zip storm.zip    inside the two archives of the record
 
 One pass over the records of the one-phase campaign
 (`experiment/results/<instance>/onephase-<ablation>-w<workers>.r1.json`) and
@@ -53,6 +54,7 @@ import os
 import re
 import statistics
 import sys
+import zipfile
 from fractions import Fraction
 from pathlib import Path
 
@@ -120,6 +122,47 @@ def records_of(folder: os.DirEntry) -> tuple[dict[str, dict], int]:
         else:
             out[conf] = rec
     return out, unreadable
+
+
+def folders_of(results: Path):
+    """The instance folders of the records, in the order of their names: the
+    name of each, and the reading of its records when asked for."""
+    for folder in sorted(os.scandir(results), key=lambda e: e.name):
+        if folder.is_dir():
+            yield folder.name, lambda folder=folder: records_of(folder)
+
+
+def archives_of(paths: list[Path]):
+    """The same instances read straight out of the archives of the campaign,
+    with nothing extracted: every member
+    `<root>/results/<instance>/<conf>.r1.json` of every archive, a later
+    archive taking the place of an earlier one on the same member, as the
+    records of Storm are merged into those of the tool when the two are
+    extracted. The records extracted weigh 11.6 GB, more than the disk of a
+    small virtual machine holds."""
+    members: dict[str, dict[str, tuple]] = collections.defaultdict(dict)
+    for path in paths:
+        z = zipfile.ZipFile(path)
+        for info in z.infolist():
+            parts = info.filename.split("/")
+            if len(parts) == 4 and parts[1] == "results" and parts[3].endswith(RECORD_SUFFIX):
+                members[parts[2]][parts[3]] = (z, info)
+
+    def read(files: dict[str, tuple]) -> tuple[dict[str, dict], int]:
+        out: dict[str, dict] = {}
+        unreadable = 0
+        for name, (z, info) in files.items():
+            conf = name[: -len(RECORD_SUFFIX)]
+            if conf != STORM_CONF and not parse_conf(conf):
+                continue
+            try:
+                out[conf] = json.loads(z.read(info))
+            except (OSError, ValueError, zipfile.BadZipFile):
+                unreadable += 1
+        return out, unreadable
+
+    for name in sorted(members):
+        yield name, lambda name=name: read(members[name])
 
 
 # -- times ------------------------------------------------------------------
@@ -287,15 +330,14 @@ class Scan:
 
 
 def scan(results: Path, baseline: str, max_diagonal: int | None = None,
-         storm_max_diagonal: int | None = None) -> Scan:
+         storm_max_diagonal: int | None = None, archives: list[Path] | None = None) -> Scan:
     """One pass over every instance folder, up to a diagonal when one is given:
     the campaign sweeps on past the diagonals the paper declares, and the
-    records it writes there stay out of the numbers."""
+    records it writes there stay out of the numbers. With archives the folders
+    are read inside them and `results` is not read."""
     s = Scan()
-    for folder in sorted(os.scandir(results), key=lambda e: e.name):
-        if not folder.is_dir():
-            continue
-        axes = parse_key(folder.name)
+    for key, read in archives_of(archives) if archives else folders_of(results):
+        axes = parse_key(key)
         if axes is None:
             continue
         if max_diagonal is not None and axes["diagonal"] > max_diagonal:
@@ -303,7 +345,7 @@ def scan(results: Path, baseline: str, max_diagonal: int | None = None,
         for name, value in axes.items():
             s.axes[name].add(value)
         s.folders[axes["diagonal"]] += 1
-        recs, unreadable = records_of(folder)
+        recs, unreadable = read()
         s.unreadable += unreadable
         for conf, rec in recs.items():
             if conf == STORM_CONF:
@@ -312,7 +354,7 @@ def scan(results: Path, baseline: str, max_diagonal: int | None = None,
             take_run(s, axes, conf, rec)
         if STORM_CONF in recs and not (
                 storm_max_diagonal is not None and axes["diagonal"] > storm_max_diagonal):
-            take_storm(s, axes, folder.name, recs[STORM_CONF], recs.get(baseline))
+            take_storm(s, axes, key, recs[STORM_CONF], recs.get(baseline))
     return s
 
 
@@ -325,8 +367,12 @@ def take_run(s: Scan, axes: dict, conf: str, rec: dict) -> None:
     if budget is not None:
         s.budgets[budget] += 1
     if rec.get("status") == TRUNCATED and rec.get("curve"):
-        s.curves[ablation].append(rec)
-        s.curves["all"].append(rec)
+        # The mean anytime curve reads four fields of a cut run: kept whole,
+        # with their candidates, the cut runs held 18 GB by the end of the
+        # pass, and with the four fields alone the pass stays under 1 GB.
+        slim = {k: rec[k] for k in ("curve", "points_found", "cut_at", "timeout") if k in rec}
+        s.curves[ablation].append(slim)
+        s.curves["all"].append(slim)
 
 
 def take_storm(s: Scan, axes: dict, key: str, storm: dict, ours: dict | None) -> None:
@@ -720,6 +766,9 @@ def main() -> int:
     here = Path(__file__).resolve().parent
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--results", type=Path, default=here / "experiment" / "results")
+    p.add_argument("--archives", type=Path, nargs="+", default=None,
+                   help="the archives of the campaign, the tool and then Storm, read "
+                        "as they are with nothing extracted; --results is then not read")
     p.add_argument("--out", type=Path,
                    default=Path.home() / "Documents" / "github" / "cpi-semantics-mdp"
                    / "parallel-paper" / "data")
@@ -734,7 +783,7 @@ def main() -> int:
     a = p.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
 
-    s = scan(a.results, a.baseline, a.max_diagonal, a.storm_max_diagonal)
+    s = scan(a.results, a.baseline, a.max_diagonal, a.storm_max_diagonal, a.archives)
     grid = grid_of(s)
     ablations = sorted({parse_conf(c)[0] for c in s.confs})
     workers = sorted({parse_conf(c)[1] for c in s.confs})
@@ -745,7 +794,7 @@ def main() -> int:
     plot_anytime(a.out, s, a.steps)
 
     summary = {
-        "generated_from": str(a.results),
+        "generated_from": " ".join(map(str, a.archives)) if a.archives else str(a.results),
         "baseline": a.baseline,
         "grid": grid,
         "ablations": ablations,

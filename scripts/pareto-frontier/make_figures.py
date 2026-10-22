@@ -32,10 +32,19 @@ every run and once over the runs that closed.
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
 import plotly.graph_objects as go
+import plotly.io as pio
 from plotly.subplots import make_subplots
+
+# No figure typesets a formula, and kaleido would fetch MathJax from a CDN
+# for every figure it writes: an empty local script stands in for it, so
+# that nothing is fetched and an offline machine does not wait on the net.
+_NO_MATHJAX = Path(tempfile.gettempdir()) / "no-mathjax.js"
+_NO_MATHJAX.write_text("")
+pio.defaults.mathjax = str(_NO_MATHJAX)
 
 HERE = Path(__file__).resolve().parent
 PAPER = HERE.parent

@@ -6,14 +6,15 @@
 #     docker run --rm -v <folder with the two zips>:/records \
 #         sdcpi-tacas27 artifact/replicate.sh /records
 #
-# The script extracts the records (about 4 GB of JSON), runs the analysis
-# that wrote the data of the paper, compares its output with the reference
-# copy shipped in artifact/data-paper, byte for byte except the field
-# generated_from of analysis.json, which names the folder read, and renders
-# the figures and the tables. With --buffers it also extracts the anytime
-# buffers (7 GB more) and rebuilds the per-point anytime metrics, which
-# take a few hours; without it, the shipped metrics are used for the one
-# figure that reads them. Any failure stops the script.
+# The script runs the analysis that wrote the data of the paper on the
+# records read inside the two archives, nothing extracted, compares its
+# output with the reference copy shipped in artifact/data-paper, byte for
+# byte except the field generated_from of analysis.json, which names what
+# was read, and renders the figures and the tables. With --buffers it also
+# extracts the records and the anytime buffers, 17 GB in all, and rebuilds
+# the per-point anytime metrics, which take a few hours; without it, the
+# shipped metrics are used for the one figure that reads them. Any failure
+# stops the script.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -32,19 +33,12 @@ if [ -f "$RECORDS/SHA256SUMS" ]; then
     (cd "$RECORDS" && sha256sum -c SHA256SUMS)
 fi
 
-echo "== 1. The records of the tool and of Storm, extracted and merged"
-cd "$OUT"
-unzip -q -o "$TOOLZIP" 'sdcpi-tacas-results-tool/results/*.json'
-unzip -q -o "$STORMZIP" 'sdcpi-tacas-results-prism-storm/results/*.r1.json'
-rsync -a sdcpi-tacas-results-prism-storm/results/ sdcpi-tacas-results-tool/results/
-cd ../..
-
-echo "== 2. The analysis of the paper, one pass over every record"
+echo "== 1. The analysis of the paper, one pass over every record inside the archives"
 python3 scripts/pareto-frontier/analysis.py \
-    --results "$OUT/sdcpi-tacas-results-tool/results" \
+    --archives "$TOOLZIP" "$STORMZIP" \
     --out "$OUT/data" --max-diagonal 7
 
-echo "== 3. The data rebuilt against the data of the paper"
+echo "== 2. The data rebuilt against the data of the paper"
 python3 - "$OUT/data" artifact/data-paper <<'EOF'
 import json, sys
 from pathlib import Path
@@ -68,9 +62,9 @@ sys.exit(1 if bad else 0)
 EOF
 
 if [ "$BUFFERS" = 1 ]; then
-    echo "== 4. The anytime buffers and the per-point metrics (hours)"
+    echo "== 3. The records, the anytime buffers and the per-point metrics (hours)"
     cd "$OUT"
-    unzip -q -o "$TOOLZIP" 'sdcpi-tacas-results-tool/results/*.buffer.jsonl.gz'
+    unzip -q -o "$TOOLZIP" 'sdcpi-tacas-results-tool/results/*'
     cd ../..
     python3 scripts/pareto-frontier/anytime_metrics.py \
         --results "$OUT/sdcpi-tacas-results-tool/results" \
@@ -87,7 +81,7 @@ else
     cp artifact/data-paper/anytime-metrics.json "$OUT/data/"
 fi
 
-echo "== 5. The figures and the tables of the paper"
+echo "== 4. The figures and the tables of the paper"
 mkdir -p scripts/data
 cp "$OUT"/data/* scripts/data/
 python3 scripts/pareto-frontier/make_figures.py

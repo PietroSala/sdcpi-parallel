@@ -17,9 +17,8 @@
 #         sdcpi-tacas27 artifact/dp-check.sh /records [budget] [procs]
 #
 # The budget is per instance and defaults to the 120 seconds of the paper;
-# the extraction is selective, the baseline and the Storm records with the
-# models, and reuses what an earlier replicate.sh left in artifact/out.
-# Any disagreement stops the script.
+# the extraction is selective, the records of the baseline and of Storm with
+# the models, 1.2 GB. Any disagreement stops the script.
 set -e
 cd "$(dirname "$0")/.."
 
