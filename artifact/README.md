@@ -43,14 +43,16 @@ campaign ran; on top of it the image carries the Rust toolchain that builds
 
     docker run --rm sdcpi-tacas27 artifact/smoke.sh
 
-Seven steps, each echoed as it runs: the tool and Storm answer; the running
+Eight steps, each echoed as it runs: the tool and Storm answer; the running
 example of the paper returns its frontier with the strategy of every point;
 the frontier is the same with 1 and with 4 workers; the same with and
 without the two early tests; Storm answers on the exported PRISM model, with
 the flags of the campaign; the generator writes an instance of the benchmark
 grid with the seed of the campaign and the tool computes its frontier; the
-figures and the tables of the paper are rendered from the reference data
-shipped in `artifact/data-paper`. The last line is `SMOKE TEST PASSED`.
+dynamic programming over sets of vectors computes the same frontier on the
+model Storm reads; the figures and the tables of the paper are rendered from
+the reference data shipped in `artifact/data-paper`. The last line is
+`SMOKE TEST PASSED`.
 
 ## Replication of the evaluation, about a quarter of an hour
 
@@ -84,6 +86,42 @@ every run, 7 GB more, and rebuilds the per-point anytime metrics
 (`anytime-metrics.json`) from them, a few hours on eight cores; without the
 flag, the shipped metrics feed the one figure that reads them.
 
+## The exact check of the frontiers, about a quarter of an hour
+
+The two paragraphs of Appendix A.2 that read a dynamic programming are
+checked by a script of their own, on the same two archives:
+
+    docker run --rm -v <folder with the two zips>:/records \
+        sdcpi-tacas27 artifact/dp-check.sh /records
+
+The script selects the instances where the frontier of Storm differs from
+ours, as `analysis.py` compares them, our frontier projected on the
+objectives Storm was asked for (Storm is not asked for a component that is
+zero on every task): 482 in the records, 471 where Storm lacks points and 11
+where it adds a dominated one, and the instances Storm alone completes, 9.
+On each, Storm builds the very model it read into an explicit MDP and
+`scripts/pareto-frontier/dynamic_programming.py` computes the exact frontier
+by backward induction over sets of vectors, exact rational arithmetic
+throughout and no code of either search involved. Every instance runs in a
+process of its own, stopped when the build or the dynamic programming
+outlives the budget, 120 seconds to an instance as in the paper. Wherever
+it completes, the exact frontier must equal our frontier, the set of Storm
+must lie on it or above it on the objectives Storm was asked for, and the
+candidates of our cut runs must lie on it or above it; the summary prints
+the counts and the last line is `DP CHECK PASSED`. On the machine of the
+evaluation, with six processes, the whole check took 649 seconds: all 482
+complete, the slowest in 15 seconds, and of the nine the one of the
+appendix completes and the other eight are stopped at the budget. The
+instance of the
+appendix whose exact frontier has 3 378 points is among the nine; to compute
+it alone, against the 64 points of Storm and the 558 candidates of our cut
+run, take the models folder the check extracts and run
+
+    python3 scripts/pareto-frontier/dynamic_programming.py \
+        artifact/out/sdcpi-tacas-results-prism-storm/models/2-5-3-2-bagging_remove_divide.prism
+
+which completes in well under a minute on the machine of the evaluation.
+
 To keep what the container writes, mount an output folder over
 `artifact/out`:
 
@@ -115,7 +153,10 @@ machine.
   the sources of the paper include.
 * The behaviour claimed of the tool (exact frontier, one strategy per
   point, independence from workers and ablation, the export Storm reads):
-  steps 2 to 6 of the smoke test.
+  steps 2 to 7 of the smoke test.
+* The agreement of the frontiers and the instances Storm alone completes
+  (Appendix A.2): `artifact/dp-check.sh`, over
+  `scripts/pareto-frontier/dynamic_programming.py`.
 
 ## License and platforms
 

@@ -4,12 +4,14 @@
 #
 #     docker run --rm sdcpi-tacas27 artifact/smoke.sh
 #
-# Seven steps: the tool answers; the running example of the paper gives its
+# Eight steps: the tool answers; the running example of the paper gives its
 # frontier; the frontier does not depend on the number of workers; it does
 # not depend on the ablation; Storm answers on the exported model; the
 # generator of the benchmark writes an instance of the grid with the seed
-# of the campaign and the tool runs it; the figures and the tables of the
-# paper are rendered from the reference data. Any failure stops the script.
+# of the campaign and the tool runs it; the dynamic programming over sets
+# of vectors computes the same frontier on the model Storm reads; the
+# figures and the tables of the paper are rendered from the reference data.
+# Any failure stops the script.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -48,7 +50,24 @@ INSTANCE=$(find /tmp/grid -name '*.yaml' | head -1)
 echo "instance $INSTANCE"
 sdcpi pareto "$INSTANCE" --workers 2 | grep -E '^points|^search seconds'
 
-echo "== 7. The figures and the tables of the paper, from the reference data"
+echo "== 7. The exact frontier by dynamic programming agrees with the tool"
+sdcpi to_prism "$INSTANCE" --out /tmp/grid.prism
+sdcpi pareto "$INSTANCE" | grep '^  exact' | sort > /tmp/frontier-tool
+python3 scripts/pareto-frontier/dynamic_programming.py /tmp/grid.prism \
+    --out /tmp/grid-dp.json
+python3 - /tmp/grid-dp.json /tmp/frontier-tool <<'EOF'
+import json, re, sys
+from fractions import Fraction
+dp = {tuple(Fraction(x) for x in v) for v in json.load(open(sys.argv[1]))["points"]}
+tool = set()
+for line in open(sys.argv[2]):
+    tool.add(tuple(Fraction(x) for x in re.findall(r'-?\d+(?:/\d+)?', line)))
+print(f"tool {len(tool)} points, dynamic programming {len(dp)} points")
+sys.exit(0 if tool == dp else 1)
+EOF
+echo "same exact frontier"
+
+echo "== 8. The figures and the tables of the paper, from the reference data"
 mkdir -p scripts/data
 cp artifact/data-paper/* scripts/data/
 python3 scripts/pareto-frontier/make_figures.py
