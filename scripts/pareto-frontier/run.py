@@ -4,6 +4,7 @@
     run.py                                  the campaign, round after round
     run.py --max-diagonal 3 --limit 4       a taste, four instances
     run.py --round 2 --rounds 1             one round, the timed-out runs again
+    run.py --max-diagonal 5 --processes 1   a slice, the first process of every cell
 
 Every instance of the grid of the journal paper is regenerated from the
 stable seed of stage 1 of storm-comparison-ablation, nothing is copied,
@@ -125,13 +126,14 @@ def pairs_of(diag: int) -> list[tuple[int, int]]:
     return [(n, diag - n) for n in range(1, 11) if 1 <= diag - n <= 10]
 
 
-def instances(max_diagonal: int | None, dims: list[int], modes: list[str]):
+def instances(max_diagonal: int | None, dims: list[int], modes: list[str],
+              processes: list[int]):
     """The grid in the order of the campaign."""
     for diag in range(2, 21):
         if max_diagonal and diag > max_diagonal:
             return
         for n, i in pairs_of(diag):
-            for k in range(1, 11):
+            for k in processes:
                 for d in dims:
                     for m in modes:
                         yield n, i, k, d, m
@@ -409,6 +411,9 @@ def main() -> int:
     p.add_argument("--max-diagonal", type=int, default=None,
                    help="nesting plus independence up to this; default the whole grid")
     p.add_argument("--dimensions", type=int, nargs="+", default=list(range(2, 11)))
+    p.add_argument("--processes", type=int, nargs="+", default=list(range(1, 11)),
+                   help="the process numbers taken in every pair of nesting and "
+                        "independence, out of the ten; default all of them")
     p.add_argument("--modes", nargs="+", default=MODES)
     p.add_argument("--limit", type=int, default=None, help="stop after this many instances")
     p.add_argument("--anytime", action="store_true",
@@ -431,6 +436,9 @@ def main() -> int:
     for m in a.modes:
         if m not in MODES:
             p.error(f"unknown mode {m}")
+    for k in a.processes:
+        if not 1 <= k <= 10:
+            p.error(f"no process number {k}: the grid has the processes 1 to 10")
     for c in a.only or []:
         if c not in dict(CONFS):
             p.error(f"unknown configuration {c}")
@@ -448,7 +456,7 @@ def main() -> int:
                      + (", dead cells off" if a.no_dead_cells else ""))
         seen = 0
         runs = 0
-        for n, i, k, d, m in instances(a.max_diagonal, a.dimensions, a.modes):
+        for n, i, k, d, m in instances(a.max_diagonal, a.dimensions, a.modes, a.processes):
             if a.limit is not None and seen >= a.limit:
                 break
             runs += campaign.run_instance(n, i, k, d, m, set(a.only) if a.only else None)
