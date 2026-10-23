@@ -1,15 +1,30 @@
 # The Zenodo record of the artifact
 
-**Pietro Sala** — Version 0.3
+**Pietro Sala** — Version 0.4
 
 The checklist of the upload, for whoever mints the record. Everything
 listed is staged in `~/Documents/sdcpi-tacas-results/` on the machine of
 the campaign, beside the archives.
 
-The draft is the deposition 23587772, created on 2026-10-23 through the
-API with the metadata below but the ORCID identifiers, and its DOI,
-10.5281/zenodo.23587772, is reserved and written in `artifact/README.md`:
-steps 1 and 2 of the order are done.
+The record 23587772 was published on 2026-10-23, with the DOI
+[10.5281/zenodo.23587772](https://doi.org/10.5281/zenodo.23587772), the
+metadata below and the three ORCID identifiers. Its eleven files are those
+of the table, staged at commit 7781431, each checked by size and MD5
+against the staging after the upload and again on the published record:
+steps 1 to 4 of the order are done. The zip of step 5 was rebuilt at the
+same commit, with the README that carries the DOI; its submission on
+OpenReview and step 6 remain.
+
+How the upload went, for a new version of the record: Zenodo answered 502
+at random moments during the long uploads, from one second to forty
+minutes into a request, and a cut upload stores nothing and leaves its
+entry locked as "already being uploaded", so the entry is deleted and the
+whole file sent again. Uploads in parts are opened but refused, and a
+request without a User-Agent is refused as unusual traffic. The 7.7 GB
+archive went through on the university network over IPv4 (`curl -4`), at
+7 to 18 MB/s, where IPv6 gave 0.5 MB/s. Saving the form of the draft in
+the browser drops a DOI reserved through the API since the page was
+loaded: reload the page before saving.
 
 ## Files of the record
 
