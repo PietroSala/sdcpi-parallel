@@ -19,7 +19,8 @@ question: is there a way of taking the decisions that keeps the expected cost
 of the process under a budget, in every cost component at once, and if there
 is, which one.
 
-Rust, no dependencies:
+Rust, with six crates pinned by `Cargo.lock`, four of exact arithmetic and
+two of decision diagrams:
 
 ```sh
 cargo build --release
