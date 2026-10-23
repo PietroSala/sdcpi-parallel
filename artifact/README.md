@@ -70,9 +70,15 @@ of both architectures copied in, 30 of its 38 GiB were in use at the peak.
    folder of VirtualBox that holds them does as well (Settings, Shared
    Folders, auto-mount): the virtual machine shows it as
    `/media/sf_<name>`, which root reads and the user `tacas` does not,
-   unless added to the group `vboxsf`. Then `sudo cp /media/sf_<name>/*
-   ~/artifact/` copies the files, or `/media/sf_<name>` takes the place of
-   `~/artifact` in the commands below, the setup being then
+   unless added to the group `vboxsf`. The shell of `tacas` therefore
+   cannot expand `/media/sf_<name>/*`, and the copy runs in a shell of
+   root:
+
+       mkdir -p ~/artifact
+       sudo sh -c "cp /media/sf_<name>/* $HOME/artifact/"
+
+   Otherwise `/media/sf_<name>` takes the place of `~/artifact` in the
+   commands below, the setup being then
    `sudo sh /media/sf_<name>/vm-setup.sh`; every command runs as root.
 
 2. **Docker and the image**, with no network:
@@ -384,7 +390,17 @@ from the records whatever the machine.
 
 ## Platforms tested
 
-* **arm64**: the TACAS 2027 virtual machine for arm64 (Ubuntu 26.04.1,
+* **arm64 under VirtualBox**: the TACAS 2027 virtual machine for arm64
+  imported from its OVA into VirtualBox 7.2.22 on an Apple M3 Max, macOS
+  26.6, with the settings the OVA declares (two cores, 8 GB, the guest
+  additions it carries) and its network cable disconnected. The files of
+  the record for arm64 on a shared folder, auto-mounted and read only,
+  copied into `~/artifact` as step 1 says: the copy (13 s), the setup
+  (31 s), the smoke test (8 s), the replication (106 s), the subset on
+  diagonal 2 (171 s) and the exact check (1 151 s, the same counts); then
+  the setup and the replication with the shared folder in place of
+  `~/artifact` (9 s and 149 s).
+* **arm64 under QEMU**: the same virtual machine (Ubuntu 26.04.1,
   kernel 7.0), its disk as the OVA ships it, run under QEMU 11.1 with the
   hypervisor of macOS on an Apple M3 Max, macOS 26.6, with the two cores
   and the 8 GB the OVA declares and no network, the files of the record
@@ -401,9 +417,9 @@ from the records whatever the machine.
   (6 s and 29 s), the replication (110 s and 165 s) and the subset on
   diagonal 2 (172 s and 251 s).
 
-VirtualBox itself was not at hand: the two images of the virtual machine
-were booted from their disks under QEMU, with the shared folder of QEMU in
-place of the one of VirtualBox.
+VirtualBox on Apple silicon runs only the virtual machine for arm64: the
+one for amd64 was booted from its disk under QEMU, with the shared folder
+of QEMU in place of the one of VirtualBox.
 
 ## License
 

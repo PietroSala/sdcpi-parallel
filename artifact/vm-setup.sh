@@ -2,10 +2,12 @@
 # Docker and the artifact image in the TACAS 2027 virtual machine, with no
 # network: the Docker of Ubuntu 26.04 is installed from the packages of the
 # archive that the record carries, and the image of the architecture of the
-# machine is loaded. Run it as root from the folder that holds the files of
-# the record, for instance the shared folder of VirtualBox:
+# machine is loaded. Run it as root, from any folder: it reads the files of
+# the record from the folder that holds it, for instance ~/artifact or the
+# shared folder of VirtualBox, which only root reads:
 #
-#     cd /media/sf_artifact && sudo sh vm-setup.sh
+#     sudo sh ~/artifact/vm-setup.sh
+#     sudo sh /media/sf_artifact/vm-setup.sh
 #
 # The packages are exactly those that apt installs for docker.io on the clean
 # machine: docker.io 29.1.3, containerd 2.2.2, runc 1.4.0, pigz, bridge-utils
