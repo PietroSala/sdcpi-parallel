@@ -9,11 +9,11 @@ rebuild the tables, the figures and the numbers of the evaluation from those
 records; the few numbers of the appendix read on the records by other means
 are named under "What maps to what".
 
-<!-- DOI: mint the Zenodo record and write it here before submission. -->
-The permanent copy of the artifact is the Zenodo record `[DOI to be
-minted]`, self-contained for the TACAS 2027 virtual machine and for Docker
-alike; the repository is public at
-<https://github.com/PietroSala/sdcpi-parallel>. The record holds
+The permanent copy of the artifact is the Zenodo record
+[doi:10.5281/zenodo.23587772](https://doi.org/10.5281/zenodo.23587772),
+self-contained for the TACAS 2027 virtual machine and for Docker alike; the
+repository is public at <https://github.com/PietroSala/sdcpi-parallel>. The
+record holds
 
 | file | size | what it is |
 |---|---:|---|

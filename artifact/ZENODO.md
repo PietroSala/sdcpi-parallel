@@ -1,10 +1,15 @@
 # The Zenodo record of the artifact
 
-**Pietro Sala** — Version 0.2
+**Pietro Sala** — Version 0.3
 
 The checklist of the upload, for whoever mints the record. Everything
 listed is staged in `~/Documents/sdcpi-tacas-results/` on the machine of
 the campaign, beside the archives.
+
+The draft is the deposition 23587772, created on 2026-10-23 through the
+API with the metadata below but the ORCID identifiers, and its DOI,
+10.5281/zenodo.23587772, is reserved and written in `artifact/README.md`:
+steps 1 and 2 of the order are done.
 
 ## Files of the record
 
